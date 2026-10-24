@@ -63,6 +63,8 @@ def screenshot(
             "ok": True,
             "monitor": idx,
             "monitor_origin": [origin["left"], origin["top"]],
+            "original_width": img.width,
+            "original_height": img.height,
             "width": w,
             "height": h,
             "format": fmt,
@@ -102,6 +104,10 @@ class ExecuteRequest(BaseModel):
     fmt: str = "jpeg"
     quality: int = Field(default=JPEG_QUALITY, ge=10, le=95)
     scale: float = Field(default=0.5, ge=0.1, le=1.0)
+    # 源图坐标换算：同时给出二者时，x/y 视为缩放源图（original_width=source_width）上的坐标；
+    # 缺省时 x/y 为物理像素，行为与 v0.2 完全一致。
+    source_width: Optional[int] = None
+    source_height: Optional[int] = None
 
 
 @router.post("/execute_action")

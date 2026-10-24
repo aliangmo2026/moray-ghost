@@ -46,6 +46,11 @@ class InternalActionError(ActionError):
     error = "INTERNAL_ERROR"
 
 
+class BadSourceSizeError(ActionError):
+    status = 400
+    error = "BAD_SOURCE_SIZE"
+
+
 def _failsafe_points() -> List[Tuple[int, int]]:
     pts = getattr(backend.pyautogui, "FAILSAFE_POINTS", [(0, 0)])
     return [(int(p[0]), int(p[1])) for p in pts]
@@ -88,6 +93,8 @@ def run_action(payload: Dict[str, Any]) -> Dict[str, Any]:
     quality = min(max(int(payload.get("quality") or 70), 10), 95)
     scale = min(max(float(payload.get("scale") or 0.5), 0.1), 1.0)
     include_before_b64 = bool(payload.get("include_before_b64"))
+    source_width = payload.get("source_width")
+    source_height = payload.get("source_height")
 
     if fmt not in ("jpeg", "png"):
         raise SafetyError(f"fmt must be jpeg or png, got {fmt!r}")
@@ -108,10 +115,31 @@ def run_action(payload: Dict[str, Any]) -> Dict[str, Any]:
     if action == "hotkey":
         keys = _parse_hotkey(str(text))
 
+    coord_source = "physical"
+    resolved_physical: Optional[List[int]] = None
+    x_req: Optional[int] = None
+    y_req: Optional[int] = None
     xi: Optional[int] = None
     yi: Optional[int] = None
     if action in COORD_ACTIONS:
-        xi, yi = int(x), int(y)  # 已在上方校验非空
+        x_req, y_req = int(x), int(y)  # 已在上方校验非空
+        xi, yi = x_req, y_req
+        # 源图坐标 → 物理像素换算（source_width/height 必须同时给出；缺省走原路径，
+        # 行为完全不变）。换算后的物理坐标仍走下方原有的越界 / Fail-Safe 角落 /
+        # 漂移检查，不绕过任何安全防线。monitor_origin 取 mss 的 left/top（多屏
+        # 主屏原点可能不是 (0,0)）。
+        if source_width is not None and source_height is not None:
+            if source_width <= 0 or source_height <= 0:
+                raise BadSourceSizeError("source_width/source_height must be positive integers")
+            real_w = mon["width"]
+            real_h = mon["height"]
+            if source_width > real_w or source_height > real_h:
+                raise BadSourceSizeError(
+                    f"source image {source_width}x{source_height} is larger than monitor {monitor} ({real_w}x{real_h})")
+            xi = round(x_req * real_w / source_width) + mon["left"]
+            yi = round(y_req * real_h / source_height) + mon["top"]
+            coord_source = "scaled"
+        resolved_physical = [xi, yi]
         inside = (mon["left"] <= xi < mon["left"] + mon["width"]
                   and mon["top"] <= yi < mon["top"] + mon["height"])
         if not inside:
@@ -129,13 +157,16 @@ def run_action(payload: Dict[str, Any]) -> Dict[str, Any]:
 
     with ACTION_LOCK:
         return _run_locked_action(action, xi, yi, text, keys, monitor, settle,
-                                  fmt, quality, scale, include_before_b64)
+                                  fmt, quality, scale, include_before_b64,
+                                  x_req, y_req, coord_source, resolved_physical)
 
 
 def _run_locked_action(action: str, xi: Optional[int], yi: Optional[int],
                        text: Optional[str], keys: Optional[List[str]], monitor: int,
                        settle: float, fmt: str, quality: int, scale: float,
-                       include_before_b64: bool) -> Dict[str, Any]:
+                       include_before_b64: bool, x_req: Optional[int],
+                       y_req: Optional[int], coord_source: str,
+                       resolved_physical: Optional[List[int]]) -> Dict[str, Any]:
     t0 = time.perf_counter()
     before_path: Optional[str] = None
     after_path: Optional[str] = None
@@ -219,8 +250,10 @@ def _run_locked_action(action: str, xi: Optional[int], yi: Optional[int],
         "executed_at": _now_iso(),
         "cursor_before": cursor_before,
         "cursor_after": cursor_after,
-        "x": xi,
-        "y": yi,
+        "x": x_req,
+        "y": y_req,
+        "coord_source": coord_source,
+        "resolved_physical": resolved_physical,
         "monitor": monitor,
         "monitor_origin": [origin["left"], origin["top"]],
         "before_screenshot_path": before_path,

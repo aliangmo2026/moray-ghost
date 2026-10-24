@@ -52,12 +52,13 @@ query：`monitor=1|0|all`（0=全屏联合区，all=各屏数组）、`fmt=png|j
 `quality=10..95`、`scale=0.1..1.0`、`save=true|false`
 
 ```json
-{"ok":true,"monitor":1,"monitor_origin":[0,0],"width":1280,"height":720,
+{"ok":true,"monitor":1,"monitor_origin":[0,0],
+ "original_width":2560,"original_height":1600,"width":1280,"height":800,
  "format":"jpeg","scale":0.5,"screenshot_path":"...\\after.jpg",
  "cursor":[x,y],"elapsed_ms":24,"image_b64":"..."}
 ```
 
-`monitor=all` 返回 `{"ok":true,"monitor":"all","shots":[每屏一条同构记录],"elapsed_ms":...}`。
+`original_width/height` 为真实屏幕尺寸，`width/height` 为缩放后尺寸；`monitor=all` 返回 `{"ok":true,"monitor":"all","shots":[每屏一条同构记录],"elapsed_ms":...}`。
 
 ### POST /execute_action（必须 `X-Ghost-Token`）
 
@@ -65,12 +66,15 @@ query：`monitor=1|0|all`（0=全屏联合区，all=各屏数组）、`fmt=png|j
 {"action":"click|double_click|right_click|move|type|hotkey",
  "x":800,"y":500,"text":"hello","monitor":1,
  "settle_seconds":0.3,"include_before_b64":false,
- "fmt":"jpeg","quality":70,"scale":0.5}
+ "fmt":"jpeg","quality":70,"scale":0.5,
+ "source_width":1280,"source_height":800}
 ```
 
-- 200：`{ok, action, executed_at, cursor_before, cursor_after, x, y, monitor,
-  monitor_origin, before_screenshot_path, after_screenshot_path, elapsed_ms,
-  after_image_b64, before_image_b64?}`
+- `source_width/height` 可选（须同时给出）：给出时 x/y 视为缩放源图上的坐标，服务端换算为
+  物理像素（400 `BAD_SOURCE_SIZE`：源尺寸非法或大于屏幕）；缺省时 x/y 即物理像素，行为不变。
+- 200：`{ok, action, executed_at, cursor_before, cursor_after, x, y, coord_source
+  ("physical"|"scaled"), resolved_physical, monitor, monitor_origin,
+  before_screenshot_path, after_screenshot_path, elapsed_ms, after_image_b64, before_image_b64?}`
 - 401 `UNAUTHORIZED`：token 缺失/错误
 - 400 `SAFETY_BLOCKED`：坐标越界 / 落入 Fail-Safe 角落 / 鼠标漂移 >3px
 - 409 `FAIL_SAFE_TRIGGERED`：用户甩鼠标到角落，附 `scene_screenshot_path` +

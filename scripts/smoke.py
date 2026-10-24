@@ -127,6 +127,44 @@ def main() -> int:
                         bool(bp) and bool(apath) and Path(bp).is_file() and Path(apath).is_file(),
                         f"{Path(bp).name} + {Path(apath).name}" if bp and apath else str(b)[:120])
 
+    # 5.5) test_scaled_click：源图坐标 → 物理像素换算（缩放图中心点回中心）
+    if not args.no_click:
+        r = requests.get("http://127.0.0.1:8030/screenshot", params={"scale": 0.5}, timeout=20)
+        s = r.json()
+        ow = s.get("original_width")
+        oh = s.get("original_height")
+        exp_w = int(m0.get("width", 0))
+        exp_h = int(m0.get("height", 0))
+        ok_all &= check("test_scaled_click: original size matches monitor",
+                        r.status_code == 200 and ow == exp_w and oh == exp_h,
+                        f"original={ow}x{oh} scaled={s.get('width')}x{s.get('height')} expect={exp_w}x{exp_h}")
+        r = requests.post("http://127.0.0.1:8030/execute_action", headers=H,
+                          json={"action": "click", "x": 640, "y": 400,
+                                "source_width": 1280, "source_height": 800,
+                                "settle_seconds": 0.1}, timeout=30)
+        b = r.json()
+        rp = b.get("resolved_physical") or []
+        ca = b.get("cursor_after") or []
+        near_center = (len(rp) == 2 and abs(rp[0] - exp_w // 2) <= 1
+                       and abs(rp[1] - exp_h // 2) <= 1)
+        ok_all &= check("test_scaled_click: resolved_physical == screen center (±1px)",
+                        r.status_code == 200 and near_center
+                        and b.get("coord_source") == "scaled",
+                        f"resolved_physical={rp} coord_source={b.get('coord_source')}")
+        cursor_ok = (len(rp) == 2 and len(ca) == 2
+                     and abs(ca[0] - rp[0]) <= 3 and abs(ca[1] - rp[1]) <= 3)
+        ok_all &= check("test_scaled_click: cursor_after within 3px of resolved",
+                        cursor_ok, f"cursor_after={ca}")
+        r = requests.post("http://127.0.0.1:8030/execute_action", headers=H,
+                          json={"action": "click", "x": 640, "y": 400,
+                                "settle_seconds": 0.1}, timeout=30)
+        b = r.json()
+        rp2 = b.get("resolved_physical") or []
+        ok_all &= check("test_scaled_click: backward compat (no source) resolved == [640,400]",
+                        r.status_code == 200 and rp2 == [640, 400]
+                        and b.get("coord_source") == "physical",
+                        f"resolved_physical={rp2} coord_source={b.get('coord_source')}")
+
     # 6) Fail-Safe 409（鼠标甩到左上角，服务端应拒动作并附现场截图）
     if args.failsafe:
         import pyautogui
