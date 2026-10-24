@@ -72,6 +72,7 @@ query：`monitor=1|0|all`（0=全屏联合区，all=各屏数组）、`fmt=png|j
 
 - `source_width/height` 可选（须同时给出）：给出时 x/y 视为缩放源图上的坐标，服务端换算为
   物理像素（400 `BAD_SOURCE_SIZE`：源尺寸非法或大于屏幕）；缺省时 x/y 即物理像素，行为不变。
+- 精度：非整数倍缩放时换算精度为 ±1px（round 取整），需要亚像素精度请传 source_width = original_width（即不缩放）。
 - 200：`{ok, action, executed_at, cursor_before, cursor_after, x, y, coord_source
   ("physical"|"scaled"), resolved_physical, monitor, monitor_origin,
   before_screenshot_path, after_screenshot_path, elapsed_ms, after_image_b64, before_image_b64?}`
