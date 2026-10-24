@@ -15,7 +15,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
 from app.core import screen_mss  # 先于其他 app 模块：尽早设置 DPI
-from app.core import auth, config, macro_store
+from app.core import auth, backend, config, macro_store
 from app.api import macro_routes, routes, window_routes
 
 config.ensure_dirs()
@@ -44,6 +44,7 @@ LOG = _setup_logging()
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     macro_store.init_db()
+    backend.release_all_modifiers()  # 启动时清一次可能残留的修饰键（进程曾中途被杀等）
     LOG.info("moray-ghost v%s listening on http://%s:%s (dpi_aware=%s)",
              config.VERSION, config.HOST, config.PORT, screen_mss.DPI_AWARE)
     LOG.info("fail_safe_enabled=true token_required=true intent_token=%s",

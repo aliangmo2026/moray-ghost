@@ -34,6 +34,7 @@ import win32con  # noqa: E402
 import win32gui  # noqa: E402
 import win32process  # noqa: E402
 
+from app.core.backend import release_all_modifiers  # noqa: E402
 from app.core import window_locator as wl  # noqa: E402
 
 token = ""
@@ -137,11 +138,15 @@ def force_foreground(hwnd: int) -> bool:
             return True
     except Exception:  # noqa: BLE001
         pass
-    # 策略2：ALT + SetForegroundWindow
+    # 策略2：ALT + SetForegroundWindow（alt 的 down/up 必须 try/finally 成对——
+    # SetForegroundWindow 在前台锁下会抛异常，异常路径不释放 = 系统级按键挂起）
     try:
         pyautogui.keyDown("alt")
-        win32gui.SetForegroundWindow(hwnd)
-        pyautogui.keyUp("alt")
+        try:
+            win32gui.SetForegroundWindow(hwnd)
+        finally:
+            pyautogui.keyUp("alt")
+            release_all_modifiers()
         time.sleep(0.2)
         if win32gui.GetForegroundWindow() == hwnd:
             return True
@@ -211,7 +216,10 @@ def close_owned(hwnd: int) -> bool:
         if gone:
             OWNED.discard(hwnd)
             return True
-        pyautogui.hotkey("alt", "n")  # 保存对话框：不保存
+        try:
+            pyautogui.hotkey("alt", "n")  # 保存对话框：不保存
+        finally:
+            release_all_modifiers()
     try:
         gone = wl.get_rect(hwnd) is None
     except Exception:  # noqa: BLE001
