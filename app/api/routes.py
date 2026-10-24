@@ -15,7 +15,7 @@ from PIL import Image
 from pydantic import BaseModel, Field
 
 from app.core import backend, controller, macro_matcher, macro_recorder
-from app.core import screen_mss, window_locator
+from app.core import environment, screen_mss, window_locator
 from app.core.config import DB_PATH, JPEG_QUALITY, SERVICE, VERSION
 
 LOG = logging.getLogger("moray-ghost.routes")
@@ -119,6 +119,13 @@ class ExecuteRequest(BaseModel):
 
 @router.post("/execute_action")
 def execute_action(req: ExecuteRequest) -> Dict[str, Any]:
+    # 环境门禁（v0.4 M2）：锁屏 / 安全桌面 / 桌面不可读时拒绝盲操作
+    try:
+        environment.assert_input_allowed()
+    except environment.SystemNotReadable as exc:
+        return JSONResponse(status_code=503, content={
+            "ok": False, "error": "SYSTEM_NOT_READABLE", "detail": exc.detail,
+            "environment": exc.snapshot})
     try:
         result = controller.run_action(req.model_dump())
     except controller.ActionError as exc:

@@ -5,6 +5,7 @@ SQL 红线：所有含外部输入的查询一律参数绑定（占位符 ?）�
 """
 from __future__ import annotations
 
+import json
 import sqlite3
 import threading
 import time
@@ -49,6 +50,19 @@ CREATE TABLE IF NOT EXISTS used_nonces (
   exp INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_used_nonces_exp ON used_nonces(exp);
+CREATE TABLE IF NOT EXISTS macro_heal_log (
+  id TEXT PRIMARY KEY,
+  macro_id TEXT,
+  task_id TEXT,
+  step_id INTEGER,
+  mode TEXT,
+  old_anchor_hash TEXT,
+  new_anchor_hash TEXT,
+  center TEXT,
+  base_version INTEGER,
+  new_version INTEGER,
+  created_at TEXT
+);
 """
 
 
@@ -142,6 +156,73 @@ def bump_stats(macro_id: str, success: bool) -> None:
             con.execute(
                 "UPDATE macros SET fail_count = fail_count + 1, "
                 "last_used = ?, updated_at = ? WHERE id = ?", (now, now, macro_id))
+
+
+class MacroNotFoundError(Exception):
+    pass
+
+
+class HealVersionConflictError(Exception):
+    pass
+
+
+class HealStepError(Exception):
+    pass
+
+
+def heal_macro(macro_id: str, task_id: Optional[str], step_id: int, mode: str,
+               new_image_b64: str, new_center: Optional[List[int]],
+               base_version: int, old_anchor_hash: str,
+               new_anchor_hash: str) -> int:
+    """视觉反哺 Heal：替换指定步骤的锚点，version 乐观锁 +1，全量审计。
+
+    抛 MacroNotFoundError / HealVersionConflictError / HealStepError。
+    """
+    now = _now()
+    log_id = "heal_" + uuid.uuid4().hex[:12]
+    with _WRITE_LOCK, closing(_connect()) as con, con:
+        row = con.execute(
+            "SELECT version, steps_json FROM macros WHERE id = ?",
+            (macro_id,)).fetchone()
+        if row is None:
+            raise MacroNotFoundError("macro " + repr(macro_id) + " not found")
+        if int(row["version"]) != int(base_version):
+            raise HealVersionConflictError(
+                "version conflict: current=" + str(row["version"])
+                + " base=" + str(base_version))
+        try:
+            steps: List[Dict[str, Any]] = json.loads(row["steps_json"] or "[]")
+        except json.JSONDecodeError:
+            raise HealStepError("macro steps_json is corrupted")
+        target_step: Optional[Dict[str, Any]] = None
+        for s in steps:
+            if s.get("step_id") == step_id:
+                target_step = s
+                break
+        if target_step is None:
+            raise HealStepError("step " + repr(step_id) + " not found in macro")
+        tgt = target_step.get("target")
+        if not isinstance(tgt, dict) or tgt.get("type") != "anchor":
+            raise HealStepError("step " + repr(step_id)
+                                + " has no anchor target to heal")
+        tgt["image_b64"] = new_image_b64
+        if new_center is not None:
+            tgt["recorded_center"] = [int(new_center[0]), int(new_center[1])]
+        updated = con.execute(
+            "UPDATE macros SET steps_json = ?, version = version + 1, "
+            "updated_at = ? WHERE id = ? AND version = ?",
+            (json.dumps(steps), now, macro_id, int(base_version)))
+        if updated.rowcount != 1:
+            raise HealVersionConflictError("version changed during heal")
+        con.execute(
+            "INSERT INTO macro_heal_log (id, macro_id, task_id, step_id, mode, "
+            "old_anchor_hash, new_anchor_hash, center, base_version, "
+            "new_version, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (log_id, macro_id, task_id, int(step_id), mode, old_anchor_hash,
+             new_anchor_hash,
+             json.dumps(new_center) if new_center else None,
+             int(base_version), int(base_version) + 1, now))
+    return int(base_version) + 1
 
 
 def consume_nonce(nonce: str, exp: int) -> None:

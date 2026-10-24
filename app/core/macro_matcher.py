@@ -37,6 +37,19 @@ def _decode_png_b64(b64: str) -> np.ndarray:
     return img
 
 
+def decode_anchor(crop_b64: str):
+    """解码并校验 heal 传入的锚点图（公开助手）。
+
+    非法 base64/PNG 或零方差（纯色）模板抛 ValueError——退化模板不能当宏锚点。
+    返回 (np数组, std)。
+    """
+    tpl = _decode_png_b64(crop_b64)
+    std = float(np.std(tpl))
+    if std < 1e-6:
+        raise ValueError("flat template (std=0) cannot be a macro anchor")
+    return tpl, std
+
+
 def crop_around(img: Image.Image, cx: int, cy: int,
                 size: Union[int, List[int], Tuple[int, int]]) -> Tuple[str, List[int]]:
     """以 (cx, cy) 为中心裁 size×size（或 [w,h]），越界自动 clamp，不越界不报错。

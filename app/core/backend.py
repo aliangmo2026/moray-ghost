@@ -127,3 +127,22 @@ def hotkey(*names: str) -> None:
 
 def key_names() -> List[str]:
     return BACKEND.key_names()
+
+
+# GetAsyncKeyState 的虚拟键码（修饰键，含左右变体）
+_VK_MODIFIERS = (("ctrl", 0x11), ("shift", 0x10), ("alt", 0x12),
+                 ("win", 0x5B), ("win", 0x5C))
+
+
+def pressed_modifiers() -> List[str]:
+    """当前处于按下状态的修饰键（GetAsyncKeyState 高位）。
+
+    既有可能是"挂起"（某处 keyDown 后没释放/进程被杀），也可能是用户物理按着——
+    本函数只如实报告按下状态，语义判断交给调用方。
+    """
+    user32 = ctypes.windll.user32
+    out: List[str] = []
+    for name, vk in _VK_MODIFIERS:
+        if user32.GetAsyncKeyState(vk) & 0x8000:
+            out.append(name)
+    return sorted(set(out))

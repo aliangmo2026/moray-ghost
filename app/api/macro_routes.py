@@ -11,16 +11,17 @@
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import time
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
-from app.core import macro_matcher, macro_recorder, macro_runner, macro_store
-from app.core import screen_mss
+from app.core import environment, macro_matcher, macro_recorder, macro_runner
+from app.core import macro_store, screen_mss
 
 router = APIRouter()
 
@@ -34,9 +35,21 @@ class ReplayBody(BaseModel):
     hwnd: Optional[int] = None
 
 
+class VisionPayload(BaseModel):
+    found: bool = True
+    center: Optional[List[int]] = Field(default=None,
+                                        description="全屏物理像素（Iris 认定的按钮新位置）")
+    crop: Optional[str] = Field(default=None,
+                                description="mode=reanchor 必填：新锚点图 base64 PNG")
+
+
 class HealBody(BaseModel):
-    steps_json: Optional[str] = None
-    note: Optional[str] = None
+    task_id: Optional[str] = None
+    step_id: int = Field(..., ge=1)
+    reason: Optional[str] = None
+    mode: str = Field(..., pattern="^(relocate|reanchor)$")
+    base_version: int = Field(..., ge=1, description="乐观锁：须等于当前 macros.version")
+    vision: VisionPayload
 
 
 class RecordStartBody(BaseModel):
@@ -55,14 +68,6 @@ class ProbeBody(BaseModel):
     monitor: int = Field(default=1, ge=1)
     window_hwnd: Optional[int] = Field(default=None,
                                        description="给出时只在该窗口当前 rect 内匹配（每次实时取 rect，不缓存）")
-
-
-def _not_implemented(what: str) -> JSONResponse:
-    return JSONResponse(status_code=501, content={
-        "ok": False,
-        "error": "NOT_IMPLEMENTED",
-        "detail": f"{what}: routes/auth/schema in place, implementation lands in v0.3",
-    })
 
 
 @router.get("/macro")
@@ -183,7 +188,102 @@ def replay(macro_id: str, body: ReplayBody):
 
 @router.post("/macro/{macro_id}/heal")
 def heal(macro_id: str, body: HealBody):
+    """视觉反哺 Heal（v0.4 M4）：主仓 Iris 以视觉结果回填锚点，ghost 不做视觉推断。
+
+    - relocate：主仓只给 vision.center → ghost 当前屏即用即裁 64x64 新锚点。
+    - reanchor：主仓直接给 vision.crop → 校验可解码且非退化后替换。
+    - 乐观锁 base_version 不匹配 → 409；version 成功 +1；全量写 macro_heal_log。
+    """
+    t0 = time.perf_counter()
+    # relocate 需要现场抓屏：环境门禁（reanchor 纯数据操作，不依赖桌面）
+    if body.mode == "relocate":
+        try:
+            environment.assert_input_allowed()
+        except environment.SystemNotReadable as exc:
+            return JSONResponse(status_code=503, content={
+                "ok": False, "error": "SYSTEM_NOT_READABLE", "detail": exc.detail,
+                "environment": exc.snapshot})
+
+    macro = macro_store.get_macro(macro_id)
+    if macro is None:
+        return JSONResponse(status_code=404, content={
+            "ok": False, "error": "NOT_FOUND",
+            "detail": "macro " + repr(macro_id) + " not found"})
+
+    raw_steps = macro.get("steps_json")
+    if isinstance(raw_steps, str):
+        steps = json.loads(raw_steps or "[]")
+    else:
+        steps = raw_steps or []
+    target = None
+    for s in steps:
+        if s.get("step_id") == body.step_id:
+            target = s
+            break
+    if target is None:
+        return JSONResponse(status_code=404, content={
+            "ok": False, "error": "NOT_FOUND",
+            "detail": "step " + repr(body.step_id) + " not found in macro"})
+    tgt = target.get("target") or {}
+    if tgt.get("type") != "anchor":
+        return JSONResponse(status_code=400, content={
+            "ok": False, "error": "BAD_REQUEST",
+            "detail": "step " + repr(body.step_id) + " has no anchor target to heal"})
+    old_b64 = tgt.get("image_b64") or ""
+
+    new_center: Optional[List[int]] = None
+    if body.mode == "relocate":
+        if not body.vision.center or len(body.vision.center) != 2:
+            return JSONResponse(status_code=400, content={
+                "ok": False, "error": "BAD_REQUEST",
+                "detail": "mode=relocate requires vision.center [x,y]"})
+        try:
+            img, _origin = screen_mss.grab(1)
+        except Exception as exc:  # noqa: BLE001
+            return JSONResponse(status_code=503, content={
+                "ok": False, "error": "CAPTURE_FAILED",
+                "detail": type(exc).__name__ + ": " + str(exc)})
+        union = screen_mss.monitor_rect(0)
+        cx, cy = int(body.vision.center[0]), int(body.vision.center[1])
+        if not (union["left"] <= cx < union["left"] + union["width"]
+                and union["top"] <= cy < union["top"] + union["height"]):
+            return JSONResponse(status_code=400, content={
+                "ok": False, "error": "BAD_REQUEST",
+                "detail": "vision.center out of screen: " + str((cx, cy))})
+        b64, _c = macro_matcher.crop_around(img, cx, cy, 64)
+        new_center = [cx, cy]
+    else:
+        if not body.vision.crop:
+            return JSONResponse(status_code=400, content={
+                "ok": False, "error": "BAD_REQUEST",
+                "detail": "mode=reanchor requires vision.crop"})
+        try:
+            macro_matcher.decode_anchor(body.vision.crop)
+        except ValueError as exc:
+            return JSONResponse(status_code=400, content={
+                "ok": False, "error": "BAD_REQUEST", "detail": str(exc)})
+        b64 = body.vision.crop
+        if body.vision.center and len(body.vision.center) == 2:
+            new_center = [int(body.vision.center[0]), int(body.vision.center[1])]
+
+    old_hash = hashlib.sha256(old_b64.encode("utf-8")).hexdigest()[:16]
+    new_hash = hashlib.sha256(b64.encode("utf-8")).hexdigest()[:16]
     try:
-        return macro_runner.heal(macro_id, steps_json=body.steps_json, note=body.note)
-    except macro_runner.NotImplementedYet:
-        return _not_implemented(f"heal of macro {macro_id!r}")
+        version = macro_store.heal_macro(macro_id, body.task_id, body.step_id,
+                                         body.mode, b64, new_center,
+                                         body.base_version, old_hash, new_hash)
+    except macro_store.MacroNotFoundError as exc:
+        return JSONResponse(status_code=404, content={
+            "ok": False, "error": "NOT_FOUND", "detail": str(exc)})
+    except macro_store.HealVersionConflictError as exc:
+        return JSONResponse(status_code=409, content={
+            "ok": False, "error": "VERSION_CONFLICT", "detail": str(exc)})
+    except macro_store.HealStepError as exc:
+        return JSONResponse(status_code=400, content={
+            "ok": False, "error": "BAD_REQUEST", "detail": str(exc)})
+
+    return {"ok": True, "healed": True, "macro_id": macro_id, "version": version,
+            "step_id": body.step_id, "mode": body.mode,
+            "recorded_center": new_center,
+            "old_anchor_hash": old_hash, "new_anchor_hash": new_hash,
+            "elapsed_ms": int((time.perf_counter() - t0) * 1000)}

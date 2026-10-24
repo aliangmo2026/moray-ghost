@@ -21,7 +21,7 @@ from typing import Any, Dict, List, Optional
 
 import win32gui
 
-from . import macro_store, screen_mss, window_locator
+from . import environment, macro_store, screen_mss, window_locator
 from .controller import ActionError, run_action
 from .macro_matcher import find
 
@@ -72,6 +72,12 @@ def _save_fail_shot(img: Any, step_id: Any) -> Optional[str]:
 def replay(macro_id: str, dry_run: bool = False, allow_fallback: bool = False,
            task_id: Optional[str] = None,
            hwnd_override: Optional[int] = None) -> Dict[str, Any]:
+    # 环境门禁（v0.4 M2）：锁屏 / 安全桌面 / 桌面不可读时拒绝盲操作
+    try:
+        environment.assert_input_allowed()
+    except environment.SystemNotReadable as exc:
+        raise ReplayError(503, "SYSTEM_NOT_READABLE", exc.detail,
+                          environment=exc.snapshot)
     macro = macro_store.get_macro(macro_id)
     if macro is None:
         raise ReplayError(404, "NOT_FOUND", "macro " + repr(macro_id) + " not found")

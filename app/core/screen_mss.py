@@ -13,6 +13,7 @@ monitors()/monitor_rect() 仅做显示器枚举（无 BitBlt），保留 thread-
 from __future__ import annotations
 
 import base64
+import collections
 import ctypes
 import io
 import logging
@@ -71,6 +72,32 @@ _worker_started = False
 # 抓屏失败退避序列（桌面瞬时不可读 / DC 失效时的自愈窗口，共约 0.65s）
 _GRAB_BACKOFF = (0.0, 0.05, 0.2, 0.4)
 
+# 抓屏健康统计（供 /environment 报告最近 1 分钟成功率）
+_health_lock = threading.Lock()
+_grab_attempts: "collections.deque[Any]" = collections.deque(maxlen=1000)
+
+
+def _record_attempt(ok: bool) -> None:
+    with _health_lock:
+        _grab_attempts.append((time.time(), bool(ok)))
+
+
+def grab_health(window_sec: float = 60.0) -> Dict[str, Any]:
+    """最近 window_sec 秒内的抓屏尝试统计 + 最后一次尝试结果。"""
+    now = time.time()
+    with _health_lock:
+        attempts = [(ts, ok) for ts, ok in _grab_attempts if now - ts <= window_sec]
+    ok_count = sum(1 for _ts, ok in attempts if ok)
+    fail_count = len(attempts) - ok_count
+    last_ok: Any = attempts[-1][1] if attempts else None
+    return {
+        "attempts_1min": len(attempts),
+        "successes_1min": ok_count,
+        "failures_1min": fail_count,
+        "success_rate": round(ok_count / len(attempts), 4) if attempts else None,
+        "last_attempt_ok": last_ok,
+    }
+
 
 def _capture_worker() -> None:
     sct: Any = None
@@ -93,9 +120,11 @@ def _capture_worker() -> None:
                     box["img"] = img
                     box["origin"] = {"left": shot.left, "top": shot.top,
                                      "width": shot.width, "height": shot.height}
+                    _record_attempt(True)
                     last_exc = None
                     break
                 except ScreenShotError as exc:
+                    _record_attempt(False)
                     last_exc = exc
                     LOG.warning("grab failed, recreating capture instance: %s", exc)
                     try:
