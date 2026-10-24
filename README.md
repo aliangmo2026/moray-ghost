@@ -96,6 +96,23 @@ query：`monitor=1|0|all`（0=全屏联合区，all=各屏数组）、`fmt=png|j
 `app/core/controller.py` 的同一安全管道。存储：`data/ghost.db`（macros /
 macro_runs / used_nonces 三张表，全部参数化查询）。
 
+#### POST /macro/probe（锚点匹配查询，只读，不执行任何动作）
+
+请求：`{"screenshot_crop":"<base64 PNG（物理像素裁剪）>","match_threshold":0.8,"monitor":1}`
+
+三态响应（**抓屏失败 ≠ 匹配失败**）：
+
+- 200 `{"ok":true,"status":"matched","center":[x,y],"score":0.93,"bbox":[x,y,w,h],"elapsed_ms":...}`
+  —— center 为物理像素，可直接喂 `/execute_action`（不带 source_width）
+- 200 `{"ok":true,"status":"not_found","best_score":0.42,"elapsed_ms":...}`
+  —— 抓屏成功但屏上没有锚点，这才允许降级让主仓重新识图
+- 503 `{"ok":false,"status":"capture_failed","error":"...","elapsed_ms":...}`
+  —— 抓屏本身失败，主仓应重试当前步骤，绝不降级识图
+
+坐标铁律：裁剪与匹配全程物理像素（scale=1.0），内部零缩放；锚点中心只决定
+"在哪裁"，不参与匹配坐标计算，重放坐标一律来自匹配框中心。零方差（纯色）模板
+会被直接判 not_found（TM_CCOEFF_NORMED 对其数学上无定义，实测会吐伪高分）。
+
 鉴权支持两种 token：静态 token（默认），以及 `GHOST_INTENT_TOKEN_ENABLED=true`
 时启用 HMAC Intent Token（`intent.<payload_b64>.<sig_b64>`，nonce 落
 `used_nonces` 防重放）。

@@ -12,13 +12,14 @@
 from __future__ import annotations
 
 import json
+import time
 from typing import Any, Dict, Optional
 
 from fastapi import APIRouter
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
-from app.core import macro_runner, macro_store
+from app.core import macro_matcher, macro_runner, macro_store, screen_mss
 
 router = APIRouter()
 
@@ -32,6 +33,12 @@ class ReplayBody(BaseModel):
 class HealBody(BaseModel):
     steps_json: Optional[str] = None
     note: Optional[str] = None
+
+
+class ProbeBody(BaseModel):
+    screenshot_crop: str = Field(..., description="模板小图（base64 PNG，物理像素裁剪）")
+    match_threshold: float = Field(default=0.80, ge=0.0, le=1.0)
+    monitor: int = Field(default=1, ge=1)
 
 
 def _not_implemented(what: str) -> JSONResponse:
@@ -66,6 +73,35 @@ def record_start():
 @router.post("/macro/record/stop")
 def record_stop():
     return _not_implemented("macro recording (stop)")
+
+
+@router.post("/macro/probe")
+def probe(body: ProbeBody):
+    """锚点匹配查询（只读，不执行任何动作，不做重放）。
+
+    三态语义（铁律）：
+    - matched    → 200，center 为物理像素，可直接喂 /execute_action（不带 source_width）
+    - not_found  → 200，抓屏成功但屏上没有该锚点——这才允许触发"降级让主仓重新识图"
+    - capture_failed → 503，抓屏本身失败——主仓应重试当前步骤，绝不能降级识图
+    """
+    t0 = time.perf_counter()
+    mon_count = len(screen_mss.monitors())
+    if body.monitor > mon_count - 1:
+        return JSONResponse(status_code=400, content={
+            "ok": False, "error": "BAD_REQUEST",
+            "detail": f"monitor out of range: {body.monitor} (1..{mon_count - 1})"})
+    try:
+        img, _origin = screen_mss.grab(body.monitor)
+    except Exception as exc:  # noqa: BLE001  抓屏失败是独立事件，不与"没找到"混同
+        elapsed = int((time.perf_counter() - t0) * 1000)
+        return JSONResponse(status_code=503, content={
+            "ok": False, "status": "capture_failed",
+            "error": type(exc).__name__ + ": " + str(exc), "elapsed_ms": elapsed})
+    result = macro_matcher.find(img, body.screenshot_crop, body.match_threshold)
+    elapsed = int((time.perf_counter() - t0) * 1000)
+    result["ok"] = True
+    result["elapsed_ms"] = elapsed
+    return result
 
 
 @router.post("/macro/{macro_id}/replay")

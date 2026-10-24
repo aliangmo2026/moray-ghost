@@ -1,0 +1,90 @@
+"""宏锚点匹配：OpenCV 模板匹配（任务 3，A 方案）。
+
+坐标系铁律（全程物理像素，内部零缩放）：
+- 裁剪：在 scale=1.0 的原始截图（app.core.screen_mss.grab 返回的 PIL Image）上裁，
+  crop 的像素 = 屏幕物理像素。
+- 匹配：拿 scale=1.0 的当前屏截图做 cv2.matchTemplate(TM_CCOEFF_NORMED)。
+- 返回：center 是物理像素坐标，可直接喂给 /execute_action（不带 source_width）。
+- 禁止用 scaled 图省内存；若将来要做该优化，必须同步记录 template_scale 并在
+  匹配前归一化。v0.3 不做这个优化。
+
+语义铁律：
+- 调用方传入的 target_point / 锚点中心只用于"在哪裁"，不参与匹配结果计算；
+  重放坐标一律来自匹配框中心 = (mx + crop_w//2, my + crop_h//2)。
+- find() 只区分 matched / not_found；抓屏失败（capture_failed）由调用方在
+  调 find() 之前单独捕获并上报——两者绝不能混为一谈（抓屏失败 ≠ 按钮消失）。
+"""
+from __future__ import annotations
+
+import base64
+import io
+from typing import Any, Dict, List, Tuple, Union
+
+import cv2
+import numpy as np
+from PIL import Image
+
+
+def _decode_png_b64(b64: str) -> np.ndarray:
+    raw = base64.b64decode(b64)
+    arr = np.frombuffer(raw, dtype=np.uint8)
+    img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+    if img is None:
+        raise ValueError("screenshot_crop is not a decodable PNG image")
+    return img
+
+
+def crop_around(img: Image.Image, cx: int, cy: int,
+                size: Union[int, List[int], Tuple[int, int]]) -> Tuple[str, List[int]]:
+    """以 (cx, cy) 为中心裁 size×size（或 [w,h]），越界自动 clamp，不越界不报错。
+
+    返回 (crop_b64, clamped_center)：clamped_center 是裁剪框实际中心的物理像素
+    坐标（贴近屏幕边缘时会偏离请求的 cx/cy）。
+    """
+    img_w, img_h = img.width, img.height
+    if isinstance(size, (list, tuple)):
+        w, h = int(size[0]), int(size[1])
+    else:
+        w = h = int(size)
+    w = max(4, min(w, img_w))
+    h = max(4, min(h, img_h))
+    left = int(cx) - w // 2
+    top = int(cy) - h // 2
+    left = max(0, min(left, img_w - w))
+    top = max(0, min(top, img_h - h))
+    crop = img.crop((left, top, left + w, top + h))
+    buf = io.BytesIO()
+    crop.save(buf, format="PNG")
+    return base64.b64encode(buf.getvalue()).decode("ascii"), [left + w // 2, top + h // 2]
+
+
+def find(img: Image.Image, crop_b64: str, threshold: float = 0.80) -> Dict[str, Any]:
+    """在整屏（scale=1.0，物理像素）上匹配模板，三态之二（capture_failed 归调用方）。
+
+    返回：
+      {"status": "matched", "center": [x,y], "score": float, "bbox": [x,y,w,h]}
+      {"status": "not_found", "best_score": float}
+    """
+    tpl = _decode_png_b64(crop_b64)
+    th, tw = tpl.shape[:2]
+    # 退化模板防线：零方差（纯色/纯平）模板在 TM_CCOEFF_NORMED 下数学上无定义，
+    # 实测会返回 ≥0.8 的伪高分（等于说"屏幕上到处都是"）。特征缺失的模板永远
+    # 不该作为宏锚点，直接判 not_found。
+    if float(np.std(tpl)) < 1e-6:
+        return {"status": "not_found", "best_score": 0.0, "reason": "flat template"}
+    screen = cv2.cvtColor(np.ascontiguousarray(np.asarray(img.convert("RGB"))),
+                          cv2.COLOR_RGB2BGR)
+    sh, sw = screen.shape[:2]
+    if th > sh or tw > sw:
+        return {"status": "not_found", "best_score": 0.0}
+    res = cv2.matchTemplate(screen, tpl, cv2.TM_CCOEFF_NORMED)
+    # 纯色模板方差为 0 时 TM_CCOEFF_NORMED 会产生 NaN，统一压成 0（视为完全不像）
+    res = np.nan_to_num(res, nan=0.0, posinf=0.0, neginf=0.0)
+    _minv, maxv, _minloc, maxloc = cv2.minMaxLoc(res)
+    score = float(maxv)
+    if score >= threshold:
+        cx = maxloc[0] + tw // 2
+        cy = maxloc[1] + th // 2
+        return {"status": "matched", "center": [int(cx), int(cy)],
+                "score": score, "bbox": [int(maxloc[0]), int(maxloc[1]), int(tw), int(th)]}
+    return {"status": "not_found", "best_score": score}
