@@ -1,0 +1,85 @@
+"""宏系统骨架路由（v0.2）：schema、鉴权、路由就位；状态型操作 501 占位。
+
+- GET  /macro                 列表（已可用，读 SQLite；验收要求返回空数组）
+- GET  /macro/{macro_id}      详情（已可用）
+- POST /macro/record/start    录制开始（501，v0.3）
+- POST /macro/record/stop     录制结束（501，v0.3）
+- POST /macro/{id}/replay     重放（501，v0.3；届时必须走 controller.run_action 同一安全管道）
+- POST /macro/{id}/heal       主仓回填修补锚点（501，v0.3）
+
+所有 /macro/* 均由 app.main 的 token 中间件强校验 X-Ghost-Token。
+"""
+from __future__ import annotations
+
+import json
+from typing import Any, Dict, Optional
+
+from fastapi import APIRouter
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel
+
+from app.core import macro_runner, macro_store
+
+router = APIRouter()
+
+
+class ReplayBody(BaseModel):
+    dry_run: bool = False
+    allow_fallback: bool = False
+    task_id: Optional[str] = None
+
+
+class HealBody(BaseModel):
+    steps_json: Optional[str] = None
+    note: Optional[str] = None
+
+
+def _not_implemented(what: str) -> JSONResponse:
+    return JSONResponse(status_code=501, content={
+        "ok": False,
+        "error": "NOT_IMPLEMENTED",
+        "detail": f"{what}: routes/auth/schema in place, implementation lands in v0.3",
+    })
+
+
+@router.get("/macro")
+def list_macros() -> Dict[str, Any]:
+    macros = macro_store.list_macros()
+    return {"ok": True, "count": len(macros), "macros": macros}
+
+
+@router.get("/macro/{macro_id}")
+def get_macro(macro_id: str):
+    row = macro_store.get_macro(macro_id)
+    if row is None:
+        return JSONResponse(status_code=404, content={
+            "ok": False, "error": "NOT_FOUND", "detail": f"macro {macro_id!r} not found"})
+    row["steps"] = json.loads(row.pop("steps_json") or "[]")
+    return {"ok": True, "macro": row}
+
+
+@router.post("/macro/record/start")
+def record_start():
+    return _not_implemented("macro recording (start)")
+
+
+@router.post("/macro/record/stop")
+def record_stop():
+    return _not_implemented("macro recording (stop)")
+
+
+@router.post("/macro/{macro_id}/replay")
+def replay(macro_id: str, body: ReplayBody):
+    try:
+        return macro_runner.replay(macro_id, dry_run=body.dry_run,
+                                   allow_fallback=body.allow_fallback, task_id=body.task_id)
+    except macro_runner.NotImplementedYet:
+        return _not_implemented(f"replay of macro {macro_id!r}")
+
+
+@router.post("/macro/{macro_id}/heal")
+def heal(macro_id: str, body: HealBody):
+    try:
+        return macro_runner.heal(macro_id, steps_json=body.steps_json, note=body.note)
+    except macro_runner.NotImplementedYet:
+        return _not_implemented(f"heal of macro {macro_id!r}")

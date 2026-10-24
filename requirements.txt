@@ -1,0 +1,7 @@
+fastapi>=0.110,<1.0
+uvicorn>=0.29,<1.0
+mss>=9.0
+pyautogui>=0.9.54
+pillow>=10.0
+python-dotenv>=1.0
+requests>=2.31

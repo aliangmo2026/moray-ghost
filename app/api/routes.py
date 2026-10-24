@@ -1,0 +1,114 @@
+"""契约 v0.2 路由：/health、/screenshot、/execute_action。
+
+鉴权由 app.main 的 token 中间件统一处理（/health、/screenshot 探活放行）。
+"""
+from __future__ import annotations
+
+import base64
+import time
+from typing import Any, Dict, Optional, Union
+
+from fastapi import APIRouter, Query
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel, Field
+
+from app.core import backend, controller, screen_mss
+from app.core.config import DB_PATH, JPEG_QUALITY, SERVICE, VERSION
+
+router = APIRouter()
+
+
+@router.get("/health")
+def health() -> Dict[str, Any]:
+    return {
+        "status": "ok",
+        "service": SERVICE,
+        "version": VERSION,
+        "fail_safe_enabled": True,
+        "token_required": True,
+        "backends": {"screenshot": "mss", "input": "pyautogui"},
+        "monitors": [m for m in screen_mss.monitors() if m["index"] != 0],
+        "cursor": list(backend.position()),
+        "db_path": str(DB_PATH),
+    }
+
+
+def _bad_request(detail: str) -> JSONResponse:
+    return JSONResponse(status_code=400, content={
+        "ok": False, "error": "BAD_REQUEST", "detail": detail})
+
+
+@router.get("/screenshot")
+def screenshot(
+    monitor: Union[int, str] = Query(default="1", description="1=主屏；0=全屏联合区；all=各屏数组；或屏号"),
+    fmt: str = Query(default="jpeg", pattern="^(png|jpeg)$"),
+    quality: int = Query(default=JPEG_QUALITY, ge=10, le=95),
+    scale: float = Query(default=1.0, ge=0.1, le=1.0),
+    save: bool = Query(default=False),
+) -> Dict[str, Any]:
+    t0 = time.perf_counter()
+    cursor = list(backend.position())
+    all_mons = screen_mss.monitors()
+
+    def shot_one(idx: int) -> Dict[str, Any]:
+        img, origin = screen_mss.grab(idx)
+        data = screen_mss.encode(img, fmt, quality, scale)
+        path = screen_mss.save_bytes(data, "screenshot", fmt) if save else None
+        w = img.width
+        h = img.height
+        if scale < 1.0:
+            w = max(1, round(img.width * scale))
+            h = max(1, round(img.height * scale))
+        return {
+            "ok": True,
+            "monitor": idx,
+            "monitor_origin": [origin["left"], origin["top"]],
+            "width": w,
+            "height": h,
+            "format": fmt,
+            "scale": scale,
+            "screenshot_path": str(path) if path else None,
+            "image_b64": base64.b64encode(data).decode("ascii"),
+        }
+
+    if isinstance(monitor, str) and monitor.strip().lower() == "all":
+        shots = [shot_one(m["index"]) for m in all_mons if m["index"] != 0]
+        elapsed = int((time.perf_counter() - t0) * 1000)
+        return {"ok": True, "monitor": "all", "shots": shots,
+                "cursor": cursor, "elapsed_ms": elapsed}
+
+    try:
+        idx = int(monitor)
+    except (TypeError, ValueError):
+        return _bad_request(f"invalid monitor value: {monitor!r}")
+    max_idx = len(all_mons) - 1
+    if idx < 0 or idx > max_idx:
+        return _bad_request(f"monitor index out of range: {idx} (0..{max_idx})")
+
+    body = shot_one(idx)
+    body["cursor"] = cursor
+    body["elapsed_ms"] = int((time.perf_counter() - t0) * 1000)
+    return body
+
+
+class ExecuteRequest(BaseModel):
+    action: str = Field(..., description="click|double_click|right_click|move|type|hotkey")
+    x: Optional[int] = None
+    y: Optional[int] = None
+    text: Optional[str] = None
+    monitor: int = 1
+    settle_seconds: float = 0.5
+    include_before_b64: bool = False
+    fmt: str = "jpeg"
+    quality: int = Field(default=JPEG_QUALITY, ge=10, le=95)
+    scale: float = Field(default=0.5, ge=0.1, le=1.0)
+
+
+@router.post("/execute_action")
+def execute_action(req: ExecuteRequest) -> Dict[str, Any]:
+    try:
+        return controller.run_action(req.model_dump())
+    except controller.ActionError as exc:
+        content: Dict[str, Any] = {"ok": False, "error": exc.error, "detail": exc.detail}
+        content.update(exc.data)
+        return JSONResponse(status_code=exc.status, content=content)
