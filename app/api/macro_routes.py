@@ -29,6 +29,9 @@ class ReplayBody(BaseModel):
     dry_run: bool = False
     allow_fallback: bool = False
     task_id: Optional[str] = None
+    # 重放目标窗口覆盖：主仓重开目标应用后把新 hwnd 传进来，所有步骤改用该窗口
+    # （不做 class 模糊重绑定，避免绑到用户窗口）。缺省用各步录制时的 hwnd。
+    hwnd: Optional[int] = None
 
 
 class HealBody(BaseModel):
@@ -169,7 +172,8 @@ def replay(macro_id: str, body: ReplayBody):
     try:
         return macro_runner.replay(macro_id, dry_run=body.dry_run,
                                    allow_fallback=body.allow_fallback,
-                                   task_id=body.task_id)
+                                   task_id=body.task_id,
+                                   hwnd_override=body.hwnd)
     except macro_runner.ReplayError as exc:
         content: Dict[str, Any] = {"ok": False, "error": exc.error,
                                    "detail": exc.detail}

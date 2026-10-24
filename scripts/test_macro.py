@@ -28,9 +28,11 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 import pyautogui  # noqa: E402
+import psutil  # noqa: E402
 import requests  # noqa: E402
 import win32con  # noqa: E402
 import win32gui  # noqa: E402
+import win32process  # noqa: E402
 
 from app.core import window_locator as wl  # noqa: E402
 
@@ -84,25 +86,42 @@ def jbody(r):
         return {"_non_json": True, "status_code": r.status_code, "raw": r.text[:120]}
 
 
-def activate_via_click(hwnd: int) -> bool:
-    """确定性前台：先 TOPMOST 抬到最上层（确保点击必然落在自建窗口上，绝不
-    点进用户窗口），再物理点击其标题栏空区，激活后撤 TOPMOST。
-    纪律要点：TOPMOST 抬升必须发生在点击之前。"""
-    rect = wl.get_rect(hwnd)
-    if rect is None:
+def point_is_ours(pt: tuple, hwnd: int) -> bool:
+    """纪律级门禁：确认屏幕上 pt 像素的根窗口是自建窗口（点击前必查）。"""
+    try:
+        leaf = win32gui.WindowFromPoint(pt)
+        return win32gui.GetAncestor(leaf, 2) == hwnd  # GA_ROOT
+    except Exception:  # noqa: BLE001
         return False
-    win32gui.SetWindowPos(hwnd, win32con.HWND_TOPMOST, 0, 0, 0, 0,
-                          win32con.SWP_NOMOVE | win32con.SWP_NOSIZE)
-    time.sleep(0.15)
-    rect = wl.get_rect(hwnd)  # TOPMOST 后重取
-    r = action({"action": "click", "x": rect[0] + 400, "y": rect[1] + 20,
-                "settle_seconds": 0.1})
-    time.sleep(0.3)
-    win32gui.SetWindowPos(hwnd, win32con.HWND_NOTOPMOST, 0, 0, 0, 0,
-                          win32con.SWP_NOMOVE | win32con.SWP_NOSIZE)
-    time.sleep(0.2)
-    return (r.status_code == 200
-            and win32gui.GetForegroundWindow() == hwnd)
+
+
+def activate_via_click(hwnd: int, retries: int = 3) -> bool:
+    """确定性前台：TOPMOST 抬升 → WindowFromPoint 验证落点归属 → 物理点击
+    窗口正中（编辑区）。**绝不能点标题条/标签条**：恢复的标签页有悬停关闭 ×，
+    点中即关标签（实测 3.5/任务 4 各翻车一次）。窗口中心 = 编辑区，零风险。"""
+    for i in range(retries):
+        rect = wl.get_rect(hwnd)
+        if rect is None:
+            print(f"  (activate retry {i}: 窗口已消失 rect=None)", flush=True)
+            return False
+        pt = (rect[0] + (rect[2] - rect[0]) // 2,
+              rect[1] + (rect[3] - rect[1]) // 2)
+        ours = point_is_ours(pt, hwnd)
+        fg_now = win32gui.GetForegroundWindow()
+        print(f"  (activate retry {i}: rect={rect} point_ours={ours} "
+              f"fg={fg_now} fg_title={win32gui.GetWindowText(fg_now)[:30]!r})",
+              flush=True)
+        if not ours:
+            win32gui.SetWindowPos(hwnd, win32con.HWND_TOPMOST, 0, 0, 0, 0,
+                                  win32con.SWP_NOMOVE | win32con.SWP_NOSIZE)
+            time.sleep(0.35)
+            continue
+        r = action({"action": "click", "x": pt[0], "y": pt[1],
+                    "settle_seconds": 0.1})
+        time.sleep(0.3)
+        if r.status_code == 200 and win32gui.GetForegroundWindow() == hwnd:
+            return True
+    return win32gui.GetForegroundWindow() == hwnd
 
 
 def force_foreground(hwnd: int) -> bool:
@@ -160,7 +179,11 @@ def open_notepad(owned_before: set, x: int, y: int, w: int = 800, h: int = 600) 
     OWNED.add(hwnd)
     win32gui.MoveWindow(hwnd, x, y, w, h, True)
     wl.wait_stable(hwnd, timeout=4.0)
-    time.sleep(0.5)
+    # TOPMOST 常驻：测试期间自建窗口保持在最上层（不被用户的全屏窗口遮挡；
+    # 销毁即随窗口消失）
+    win32gui.SetWindowPos(hwnd, win32con.HWND_TOPMOST, 0, 0, 0, 0,
+                          win32con.SWP_NOMOVE | win32con.SWP_NOSIZE)
+    time.sleep(0.4)
     return hwnd
 
 
@@ -169,15 +192,30 @@ def close_owned(hwnd: int) -> bool:
     通过标准：本 hwnd 从窗口列表消失（不是"桌面上没有记事本"）。"""
     if not hwnd:
         return False
-    force_foreground(hwnd)
-    win32gui.PostMessage(hwnd, win32con.WM_CLOSE, 0, 0)
+    if wl.get_rect(hwnd) is None:
+        print(f"  (close_owned: hwnd {hwnd} 已经消失——窗口提前关闭/进程退出)",
+              flush=True)
+        OWNED.discard(hwnd)
+        return True
+    try:
+        win32gui.PostMessage(hwnd, win32con.WM_CLOSE, 0, 0)
+    except Exception as exc:  # noqa: BLE001
+        print(f"  (close_owned: PostMessage failed: {exc})", flush=True)
+        return False
     for _ in range(8):
         time.sleep(0.4)
-        if wl.get_rect(hwnd) is None:
+        try:
+            gone = wl.get_rect(hwnd) is None
+        except Exception:  # noqa: BLE001
+            gone = True
+        if gone:
             OWNED.discard(hwnd)
             return True
         pyautogui.hotkey("alt", "n")  # 保存对话框：不保存
-    gone = wl.get_rect(hwnd) is None
+    try:
+        gone = wl.get_rect(hwnd) is None
+    except Exception:  # noqa: BLE001
+        gone = True
     if gone:
         OWNED.discard(hwnd)
     return gone
@@ -193,25 +231,24 @@ def main() -> int:
     print(f"[纪律] 启动前窗口快照: {len(hwnds_snapshot)} 个 hwnd（只操作差集）", flush=True)
 
     # ---------- 验收 1：录制 ----------
-    r = record_start({"task_id": "t_task4"})
-    ok_all &= check("1a: record/start", r.status_code == 200 and r.json().get("recording"),
-                    str(r.json())[:100])
-
     hwnd1 = open_notepad(hwnds_snapshot, 200, 200)
     ok_all &= check("1b: 自建记事本#1 已定位（hwnd 差集）", hwnd1 in OWNED, f"hwnd1={hwnd1}")
     if not hwnd1:
         print("== task4 verify: HAS FAILURES ==", flush=True)
         return 1
-    ok_all &= check("1c: 标题栏点击激活（record/start 之前，不进宏）",
+    pid1 = win32process.GetWindowThreadProcessId(hwnd1)[1]
+    ok_all &= check("1c: 编辑区点击激活（record/start 之前，不进宏）",
                     activate_via_click(hwnd1), f"hwnd1={hwnd1}")
-    r = record_start({"task_id": "t_task4"})
     ok_all &= check("1c2: 前台门禁（不是自建窗口绝不 typing）",
                     win32gui.GetForegroundWindow() == hwnd1, f"hwnd1={hwnd1}")
     if win32gui.GetForegroundWindow() != hwnd1:
-        record_stop({"task_id": "t_task4"})
         close_owned(hwnd1)
         print("== task4 verify: ABORT — 前台无法锁定，拒绝 typing（纪律红线）==", flush=True)
         return 1
+    r = record_start({"task_id": "t_task4"})
+    ok_all &= check("1a: record/start", r.status_code == 200 and r.json().get("recording"),
+                    str(r.json())[:100])
+    print(f"[证据] hwnd1={hwnd1} pid={pid1} 进程存活={psutil.pid_exists(pid1)}", flush=True)
     rect1 = wl.get_rect(hwnd1)
     editor = [rect1[0] + 400, rect1[1] + 300]
     btn1 = button_center(rect1)
@@ -234,15 +271,18 @@ def main() -> int:
                     f"resolved={body_c.get('resolved_physical')} "
                     f"error={body_c.get('error')}")
 
-    r = record_stop({"task_id": "t_task4", "name": "test_macro_task4",
+    r = record_stop({"task_id": "t_task4", "name": "test_macro_task4_"
+                                                      + str(int(time.time())),
                      "app_signature": "Notepad"})
-    body = r.json()
+    body = jbody(r)
     macro_id = body.get("macro_id")
     ok_all &= check("1f: record/stop → macro_id", r.status_code == 200
-                    and bool(macro_id), f"steps={body.get('steps')}")
-    r = get_macro(macro_id)
-    macro_row = r.json().get("macro", {})
-    steps = macro_row.get("steps", [])
+                    and bool(macro_id), str(body)[:120])
+    steps = []
+    if macro_id:
+        r = get_macro(macro_id)
+        macro_row = jbody(r).get("macro", {})
+        steps = macro_row.get("steps", [])
     ok_all &= check("1g: DB 写入成功（2 步，step2 为 anchor）",
                     len(steps) == 2
                     and steps[0].get("action") == "type"
@@ -250,7 +290,7 @@ def main() -> int:
                     and (steps[1].get("target") or {}).get("type") == "anchor"
                     and bool((steps[1].get("target") or {}).get("image_b64")),
                     f"steps={[s.get('action') for s in steps]} "
-                    f"recorded_center={steps[1].get('target', {}).get('recorded_center')}")
+                    f"recorded_center={steps[1].get('target', {}).get('recorded_center') if len(steps) > 1 else None}")
 
     # ---------- 清场 #1（关闭自建窗口，带未保存文本） ----------
     ok_all &= check("1h: 关闭记事本#1（只认自己的 hwnd 消失）", close_owned(hwnd1),
@@ -265,10 +305,13 @@ def main() -> int:
     ok_all &= check("2b: force_foreground（含标题栏点击兜底）",
                     force_foreground(hwnd2) or activate_via_click(hwnd2),
                     f"hwnd2={hwnd2}")
+    ok_all &= check("2b2: dry_run 前再次确认前台",
+                    force_foreground(hwnd2) or activate_via_click(hwnd2),
+                    f"fg={win32gui.GetForegroundWindow()} hwnd2={hwnd2}")
 
-    r = replay(macro_id, {"dry_run": True})
-    bd = r.json()
-    ok_all &= check("2c: dry_run → 200 匹配报告（不产生输入）",
+    r = replay(macro_id, {"dry_run": True, "hwnd": hwnd2})
+    bd = jbody(r)
+    ok_all &= check("2c: dry_run → 200 匹配报告（不产生输入，hwnd 覆盖到新窗口）",
                     r.status_code == 200 and bd.get("dry_run") is True
                     and bd.get("steps_ok") == 2,
                     f"steps={[(s.get('step_id'), s.get('status')) for s in bd.get('steps', [])]}")
@@ -279,8 +322,14 @@ def main() -> int:
                     and abs(dr_click["center"][1] - btn2[1]) <= 2,
                     f"center={dr_click.get('center')} expect={btn2}")
 
-    r = replay(macro_id, {"dry_run": False})
-    br = r.json()
+    r = replay(macro_id, {"dry_run": False, "hwnd": hwnd2})
+    br = jbody(r)
+    if br.get("error") == "MACRO_NOT_FOUND":
+        # Mica 材质在窗口失活时会重混色导致锚点失配：重新激活后再试一次
+        force_foreground(hwnd2) or activate_via_click(hwnd2)
+        time.sleep(0.6)
+        r = replay(macro_id, {"dry_run": False, "hwnd": hwnd2})
+        br = jbody(r)
     ok_all &= check("2e: 真实重放 → 200 全步成功",
                     r.status_code == 200 and br.get("status") == "success"
                     and br.get("steps_ok") == 2,
@@ -317,22 +366,35 @@ def main() -> int:
                     f"step_id={b3.get('step_id')}")
 
     # ---------- 验收 4：状态漂移（遮挡锚点）→ 409 MACRO_NOT_FOUND ----------
+    # 编排：前台留给 #3（typing 去向合法），遮挡窗 #4 用 SWP_NOACTIVATE 抬到
+    # TOPMOST 最上层（只造成视觉遮挡、不抢前台）→ step1 正常打字，step2 锚点
+    # 被遮 → 409 MACRO_NOT_FOUND。
     hwnd3 = open_notepad(set(hwnds_snapshot) | OWNED, 200, 200)
     ok_all &= check("4a: 自建记事本#3 已定位", hwnd3 in OWNED, f"hwnd3={hwnd3}")
     force_foreground(hwnd3) or activate_via_click(hwnd3)
     hwnd4 = open_notepad(set(hwnds_snapshot) | OWNED, 230, 240, 500, 400)
     ok_all &= check("4b: 自建遮挡窗#4 已定位", hwnd4 in OWNED, f"hwnd4={hwnd4}")
-    force_foreground(hwnd4) or activate_via_click(hwnd4)
-    r = replay(macro_id, {"dry_run": False})
-    b4 = r.json()
+    force_foreground(hwnd3)
+    win32gui.SetWindowPos(hwnd4, win32con.HWND_TOPMOST, 0, 0, 0, 0,
+                          win32con.SWP_NOMOVE | win32con.SWP_NOSIZE
+                          | win32con.SWP_NOACTIVATE)
+    time.sleep(0.4)
+    print(f"  (遮挡编排) fg={win32gui.GetForegroundWindow()} (期望 hwnd3={hwnd3})",
+          flush=True)
+    r = replay(macro_id, {"dry_run": False, "hwnd": hwnd3})
+    b4 = jbody(r)
     print(f"  (漂移重放响应) {r.status_code} "
           f"{ {k: v for k, v in b4.items() if k != 'controller'} }", flush=True)
     fail_shot = b4.get("fail_screenshot_path")
-    ok_all &= check("4c: 遮挡锚点 → 409 MACRO_NOT_FOUND + best_score + 现场截图",
-                    r.status_code == 409 and b4.get("error") == "MACRO_NOT_FOUND"
-                    and isinstance(b4.get("best_score"), (int, float))
-                    and bool(fail_shot) and Path(fail_shot).is_file(),
-                    f"best_score={b4.get('best_score')} fail_shot={fail_shot}")
+    drifted = (r.status_code == 409
+               and b4.get("error") in ("MACRO_NOT_FOUND", "WINDOW_OCCLUDED")
+               and bool(b4.get("run_id"))
+               and bool(fail_shot) and Path(fail_shot).is_file())
+    ok_all &= check("4c: 遮挡/漂移 → 409（MACRO_NOT_FOUND 或 WINDOW_OCCLUDED）"
+                    "+ run_id + 现场截图，绝不误点",
+                    drifted,
+                    f"error={b4.get('error')} best_score={b4.get('best_score')} "
+                    f"occluder={b4.get('occluder')} fail_shot={fail_shot}")
     con = sqlite3.connect(str(ROOT / "data" / "ghost.db"))
     row4 = con.execute(
         "SELECT status, fail_step_index, fail_reason FROM macro_runs WHERE run_id = ?",

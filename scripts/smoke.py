@@ -96,10 +96,10 @@ def main() -> int:
         pass
     ok_all &= check("POST /execute_action (no token) -> 401", r.status_code == 401, detail)
 
-    # 4) 宏骨架
+    # 4) 宏系统
     r = requests.get("http://127.0.0.1:8030/macro", headers=H, timeout=10)
-    ok_all &= check("GET /macro (token) -> 空数组",
-                    r.status_code == 200 and r.json().get("macros") == [],
+    ok_all &= check("GET /macro (token) -> 200 列表可用",
+                    r.status_code == 200 and isinstance(r.json().get("macros"), list),
                     f"count={r.json().get('count')}")
     r = requests.post("http://127.0.0.1:8030/macro/whatever/replay",
                       json={"dry_run": True}, timeout=10)
@@ -107,8 +107,8 @@ def main() -> int:
     r = requests.post("http://127.0.0.1:8030/macro/whatever/replay", headers=H,
                       json={"dry_run": True, "allow_fallback": False, "task_id": None},
                       timeout=10)
-    ok_all &= check("POST /macro/whatever/replay (token) -> 501",
-                    r.status_code == 501, str(r.json().get("error")))
+    ok_all &= check("POST /macro/whatever/replay (token) -> 404（真实重放：宏不存在）",
+                    r.status_code == 404, str(r.json().get("error")))
 
     # 5) 授权 click（真实动作，落到安全坐标 = 主屏中心）
     if not args.no_click:

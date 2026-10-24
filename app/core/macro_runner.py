@@ -19,9 +19,13 @@ import uuid
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
+import win32gui
+
 from . import macro_store, screen_mss, window_locator
 from .controller import ActionError, run_action
 from .macro_matcher import find
+
+GA_ROOT = 2
 
 CAPTURE_RETRIES = 2  # 抓屏失败后最多重试 2 次（共 3 次）
 MATCH_THRESHOLD = 0.80
@@ -66,7 +70,8 @@ def _save_fail_shot(img: Any, step_id: Any) -> Optional[str]:
 
 
 def replay(macro_id: str, dry_run: bool = False, allow_fallback: bool = False,
-           task_id: Optional[str] = None) -> Dict[str, Any]:
+           task_id: Optional[str] = None,
+           hwnd_override: Optional[int] = None) -> Dict[str, Any]:
     macro = macro_store.get_macro(macro_id)
     if macro is None:
         raise ReplayError(404, "NOT_FOUND", "macro " + repr(macro_id) + " not found")
@@ -90,8 +95,11 @@ def replay(macro_id: str, dry_run: bool = False, allow_fallback: bool = False,
     for step in steps:
         step_id = step.get("step_id")
         action = str(step.get("action", "")).lower()
-        hwnd = step.get("hwnd")
-        result: Dict[str, Any] = {"step_id": step_id, "action": action}
+        # 目标窗口：主仓可通过 hwnd_override 统一覆盖（重开应用后的新 hwnd）；
+        # 缺省用各步录制时的 hwnd。窗口 rect 每步实时获取，不缓存。
+        hwnd = int(hwnd_override) if hwnd_override else step.get("hwnd")
+        result: Dict[str, Any] = {"step_id": step_id, "action": action,
+                                  "hwnd": hwnd}
 
         # 1) 窗口存活检查（每次实时取 rect，不缓存）
         rect = window_locator.get_rect(hwnd) if hwnd else None
@@ -103,6 +111,20 @@ def replay(macro_id: str, dry_run: bool = False, allow_fallback: bool = False,
             result["status"] = "window_not_found"
             results.append(result)
             break
+
+        # 1.5) type/hotkey 前台门禁：打字只会进前台窗口——目标不在前台就拒绝，
+        #      绝不把宏文本打进无关应用（纪律红线）。
+        if action in ("type", "hotkey") and hwnd:
+            fg = window_locator.foreground_hwnd()
+            if fg != int(hwnd):
+                failure = ReplayError(
+                    409, "WINDOW_NOT_FOREGROUND",
+                    "step " + repr(step_id) + ": target hwnd " + repr(hwnd)
+                    + " is not foreground (fg=" + repr(fg) + "); typing aborted",
+                    step_id=step_id, hwnd=hwnd, foreground=fg)
+                result["status"] = "window_not_foreground"
+                results.append(result)
+                break
 
         # 2) click 系：ROI 内锚点匹配（重放坐标只来自匹配结果）
         if action in ("click", "double_click", "right_click"):
@@ -180,6 +202,25 @@ def replay(macro_id: str, dry_run: bool = False, allow_fallback: bool = False,
         # 3) 执行（同一安全管道；wait_after_ms 即动作后 settle）
         wait_ms = int(step.get("wait_after_ms") or 0)
         payload["settle_seconds"] = min(max(wait_ms / 1000.0, 0.0), 5.0)
+        # 3) 点击落点归属门禁：匹配与点击之间 z 序可能变化（遮挡/用户切窗），
+        #    落点被别的窗口覆盖就拒绝——绝不把点击打进别的窗口（纪律红线）。
+        if action in ("click", "double_click", "right_click"):
+            pt = (int(payload["x"]), int(payload["y"]))
+            try:
+                root = win32gui.GetAncestor(win32gui.WindowFromPoint(pt), GA_ROOT)
+            except Exception:  # noqa: BLE001
+                root = None
+            if root != int(hwnd):
+                fail_shot = _save_fail_shot(img, step_id)
+                failure = ReplayError(
+                    409, "WINDOW_OCCLUDED",
+                    "step " + repr(step_id) + ": click point " + str(pt)
+                    + " is covered by another window (root=" + repr(root) + ")",
+                    step_id=step_id, hwnd=hwnd, occluder=root,
+                    fail_screenshot_path=fail_shot)
+                result["status"] = "window_occluded"
+                results.append(result)
+                break
         try:
             out = run_action(payload)
         except ActionError as exc:
@@ -220,4 +261,5 @@ def replay(macro_id: str, dry_run: bool = False, allow_fallback: bool = False,
     macro_store.finish_run(run_id, "failed", finished, steps_ok,
                            failure.data.get("step_id"), failure.detail, fail_shot)
     macro_store.bump_stats(macro_id, success=False)
+    failure.data["run_id"] = run_id  # 失败响应也带 run_id，便于主仓核对 macro_runs
     raise failure
