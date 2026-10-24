@@ -16,7 +16,7 @@ from fastapi.responses import JSONResponse
 
 from app.core import screen_mss  # 先于其他 app 模块：尽早设置 DPI
 from app.core import auth, config, macro_store
-from app.api import macro_routes, routes
+from app.api import macro_routes, routes, window_routes
 
 config.ensure_dirs()
 config.ensure_token()
@@ -60,7 +60,8 @@ _OPEN_PATHS = {"/health", "/screenshot", "/docs", "/redoc", "/openapi.json", "/f
 
 def _is_protected(path: str) -> bool:
     """执行动作类接口强校验；/health 与 /screenshot 探活放行。"""
-    return (path == "/execute_action" or path.startswith("/macro")) and path not in _OPEN_PATHS
+    return ((path == "/execute_action" or path.startswith("/macro")
+             or path.startswith("/window")) and path not in _OPEN_PATHS)
 
 
 @app.middleware("http")
@@ -77,3 +78,4 @@ async def token_guard(request: Request, call_next: Callable[[Request], Awaitable
 
 app.include_router(routes.router)
 app.include_router(macro_routes.router)
+app.include_router(window_routes.router)

@@ -96,18 +96,36 @@ query：`monitor=1|0|all`（0=全屏联合区，all=各屏数组）、`fmt=png|j
 `app/core/controller.py` 的同一安全管道。存储：`data/ghost.db`（macros /
 macro_runs / used_nonces 三张表，全部参数化查询）。
 
+#### GET /window/list（需 token）
+
+```json
+{"ok": true, "windows": [{"hwnd": 123456, "title": "无标题 - 记事本",
+  "class_name": "Notepad", "rect": [l,t,r,b], "is_minimized": false,
+  "is_foreground": true}], "elapsed_ms": 3}
+```
+
+已排除：最小化、不可见、WS_EX_TOOLWINDOW 工具窗、零尺寸、无标题辅助表面。
+rect 为物理像素 `[l,t,r,b]`（GetWindowRect 原值，不收敛到屏幕边界）。
+
 #### POST /macro/probe（锚点匹配查询，只读，不执行任何动作）
 
-请求：`{"screenshot_crop":"<base64 PNG（物理像素裁剪）>","match_threshold":0.8,"monitor":1}`
+请求：`{"screenshot_crop":"<base64 PNG（物理像素裁剪）>","match_threshold":0.8,"monitor":1,"window_hwnd":null}`
 
-三态响应（**抓屏失败 ≠ 匹配失败**）：
+`window_hwnd` 可选：给出时**当次实时**取该窗口 rect 作为 ROI（每次重拿、绝不缓存——
+用户会拖窗口），只在窗口内匹配。无 `window_hwnd` 时行为与旧版完全一致。
 
-- 200 `{"ok":true,"status":"matched","center":[x,y],"score":0.93,"bbox":[x,y,w,h],"elapsed_ms":...}`
-  —— center 为物理像素，可直接喂 `/execute_action`（不带 source_width）
-- 200 `{"ok":true,"status":"not_found","best_score":0.42,"elapsed_ms":...}`
-  —— 抓屏成功但屏上没有锚点，这才允许降级让主仓重新识图
+四态响应（**抓屏失败 ≠ 匹配失败 ≠ 窗口不存在**）：
+
+- 200 `{"ok":true,"status":"matched","center":[x,y],"score":0.93,"bbox":[x,y,w,h],
+  "matched_in_window":true,"roi_used":[l,t,r,b],"find_ms":38,"elapsed_ms":...}`
+  —— center 为**全屏物理像素**（无论是否用窗口 ROI），可直接喂 `/execute_action`
+  （不带 source_width）；`find_ms` 为 find() 内部耗时（抓屏之外）
+- 200 `{"ok":true,"status":"not_found","best_score":0.42,...}`
+  —— 抓屏成功但搜索区内没有锚点，这才允许降级让主仓重新识图
 - 503 `{"ok":false,"status":"capture_failed","error":"...","elapsed_ms":...}`
   —— 抓屏本身失败，主仓应重试当前步骤，绝不降级识图
+- 409 `{"ok":false,"error":"WINDOW_NOT_FOUND","status":"window_not_found","detail":"..."}`
+  —— 指定的 hwnd 无效/最小化/零尺寸，主仓应恢复窗口后重试
 
 坐标铁律：裁剪与匹配全程物理像素（scale=1.0），内部零缩放；锚点中心只决定
 "在哪裁"，不参与匹配坐标计算，重放坐标一律来自匹配框中心。零方差（纯色）模板

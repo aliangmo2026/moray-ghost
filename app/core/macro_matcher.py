@@ -18,11 +18,14 @@ from __future__ import annotations
 
 import base64
 import io
-from typing import Any, Dict, List, Tuple, Union
+import time
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import cv2
 import numpy as np
 from PIL import Image
+
+from . import window_locator
 
 
 def _decode_png_b64(b64: str) -> np.ndarray:
@@ -58,33 +61,85 @@ def crop_around(img: Image.Image, cx: int, cy: int,
     return base64.b64encode(buf.getvalue()).decode("ascii"), [left + w // 2, top + h // 2]
 
 
-def find(img: Image.Image, crop_b64: str, threshold: float = 0.80) -> Dict[str, Any]:
+def find(img: Image.Image, crop_b64: str, threshold: float = 0.80,
+         roi: Optional[List[int]] = None,
+         hwnd: Optional[int] = None) -> Dict[str, Any]:
     """在整屏（scale=1.0，物理像素）上匹配模板，三态之二（capture_failed 归调用方）。
 
+    坐标铁律：**无论是否传 roi/hwnd，返回的 center 都是【全屏物理像素坐标】**——
+    ROI 只限定搜索范围，匹配结果始终加回 ROI 原点 (l, t)。
+
+    - roi:  [l,t,r,b] 屏幕物理像素搜索区；越界部分会收敛到屏幕边界
+      （窗口可能部分在屏外；负索引会让 numpy 切片回绕，必须 clamp）。
+    - hwnd: 传入时**当次**调 window_locator.get_rect(hwnd) 取 rect 作为 roi——
+      每次重拿、绝不缓存（用户会拖窗口，某些应用会自己改大小）。
+      hwnd 无效/最小化/零尺寸 → status="window_not_found"（调用方映射 409）。
+    - 转换只对搜索区做（先 PIL crop 再转 BGR），ROI 路径的转换开销 ~2ms。
+
     返回：
-      {"status": "matched", "center": [x,y], "score": float, "bbox": [x,y,w,h]}
-      {"status": "not_found", "best_score": float}
+      {"status": "matched", "center": [x,y], "score": float, "bbox": [x,y,w,h],
+       "roi_used": [l,t,r,b]|None, "find_ms": int}
+      {"status": "not_found", "best_score": float, "roi_used": ..., "find_ms": ...}
+      {"status": "window_not_found", "reason": str, "find_ms": ...}   （仅 hwnd 无效时）
     """
+    t0 = time.perf_counter()
     tpl = _decode_png_b64(crop_b64)
     th, tw = tpl.shape[:2]
     # 退化模板防线：零方差（纯色/纯平）模板在 TM_CCOEFF_NORMED 下数学上无定义，
     # 实测会返回 ≥0.8 的伪高分（等于说"屏幕上到处都是"）。特征缺失的模板永远
     # 不该作为宏锚点，直接判 not_found。
     if float(np.std(tpl)) < 1e-6:
-        return {"status": "not_found", "best_score": 0.0, "reason": "flat template"}
-    screen = cv2.cvtColor(np.ascontiguousarray(np.asarray(img.convert("RGB"))),
-                          cv2.COLOR_RGB2BGR)
-    sh, sw = screen.shape[:2]
-    if th > sh or tw > sw:
-        return {"status": "not_found", "best_score": 0.0}
-    res = cv2.matchTemplate(screen, tpl, cv2.TM_CCOEFF_NORMED)
+        return {"status": "not_found", "best_score": 0.0,
+                "reason": "flat template", "roi_used": None,
+                "find_ms": int((time.perf_counter() - t0) * 1000)}
+
+    used_roi: Optional[List[int]] = None
+    if hwnd is not None:
+        rect = window_locator.get_rect(int(hwnd))
+        if rect is None:
+            return {"status": "window_not_found",
+                    "reason": "hwnd invalid / minimized / zero-size (rect fetched fresh)",
+                    "roi_used": None,
+                    "find_ms": int((time.perf_counter() - t0) * 1000)}
+        used_roi = rect
+    elif roi is not None:
+        used_roi = [int(v) for v in roi]
+
+    img_w, img_h = img.width, img.height
+    ox = oy = 0
+    if used_roi is not None:
+        left, top, right, bottom = used_roi
+        left = max(0, min(int(left), img_w))
+        top = max(0, min(int(top), img_h))
+        right = max(0, min(int(right), img_w))
+        bottom = max(0, min(int(bottom), img_h))
+        if right - left < tw or bottom - top < th:
+            return {"status": "not_found", "best_score": 0.0,
+                    "reason": "roi smaller than template",
+                    "roi_used": [left, top, right, bottom],
+                    "find_ms": int((time.perf_counter() - t0) * 1000)}
+        # 只转换搜索区：先 PIL crop 再转 BGR，ROI 路径转换开销从 ~17ms 降到 ~2ms
+        search_pil = img.crop((left, top, right, bottom))
+        search = cv2.cvtColor(
+            np.ascontiguousarray(np.asarray(search_pil)), cv2.COLOR_RGB2BGR)
+        ox, oy = left, top
+        used_roi = [left, top, right, bottom]
+    else:
+        search = cv2.cvtColor(
+            np.ascontiguousarray(np.asarray(img.convert("RGB"))), cv2.COLOR_RGB2BGR)
+
+    res = cv2.matchTemplate(search, tpl, cv2.TM_CCOEFF_NORMED)
     # 纯色模板方差为 0 时 TM_CCOEFF_NORMED 会产生 NaN，统一压成 0（视为完全不像）
     res = np.nan_to_num(res, nan=0.0, posinf=0.0, neginf=0.0)
     _minv, maxv, _minloc, maxloc = cv2.minMaxLoc(res)
     score = float(maxv)
+    find_ms = int((time.perf_counter() - t0) * 1000)
     if score >= threshold:
-        cx = maxloc[0] + tw // 2
-        cy = maxloc[1] + th // 2
+        cx = maxloc[0] + tw // 2 + ox
+        cy = maxloc[1] + th // 2 + oy
         return {"status": "matched", "center": [int(cx), int(cy)],
-                "score": score, "bbox": [int(maxloc[0]), int(maxloc[1]), int(tw), int(th)]}
-    return {"status": "not_found", "best_score": score}
+                "score": score,
+                "bbox": [int(maxloc[0] + ox), int(maxloc[1] + oy), int(tw), int(th)],
+                "roi_used": used_roi, "find_ms": find_ms}
+    return {"status": "not_found", "best_score": score,
+            "roi_used": used_roi, "find_ms": find_ms}

@@ -7,3 +7,4 @@ python-dotenv>=1.0
 requests>=2.31
 psutil>=5.9  # 压测/诊断（scripts/test_stress.py）
 opencv-python-headless>=4.9  # 宏锚点模板匹配（macro_matcher）；服务无 GUI，用 headless（实测与完整版同速）
+pywin32>=306  # 窗口定位（window_locator：枚举/GetWindowRect/稳定性等待）

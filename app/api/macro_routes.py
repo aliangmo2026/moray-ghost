@@ -39,6 +39,8 @@ class ProbeBody(BaseModel):
     screenshot_crop: str = Field(..., description="模板小图（base64 PNG，物理像素裁剪）")
     match_threshold: float = Field(default=0.80, ge=0.0, le=1.0)
     monitor: int = Field(default=1, ge=1)
+    window_hwnd: Optional[int] = Field(default=None,
+                                       description="给出时只在该窗口当前 rect 内匹配（每次实时取 rect，不缓存）")
 
 
 def _not_implemented(what: str) -> JSONResponse:
@@ -79,10 +81,12 @@ def record_stop():
 def probe(body: ProbeBody):
     """锚点匹配查询（只读，不执行任何动作，不做重放）。
 
-    三态语义（铁律）：
-    - matched    → 200，center 为物理像素，可直接喂 /execute_action（不带 source_width）
-    - not_found  → 200，抓屏成功但屏上没有该锚点——这才允许触发"降级让主仓重新识图"
+    四态语义（铁律）：
+    - matched    → 200，center 为全屏物理像素（无论是否用窗口 ROI），可直接喂
+                   /execute_action（不带 source_width）
+    - not_found  → 200，抓屏成功但搜索区内没有该锚点——这才允许触发"降级让主仓重新识图"
     - capture_failed → 503，抓屏本身失败——主仓应重试当前步骤，绝不能降级识图
+    - window_not_found → 409，指定 hwnd 但窗口无效/最小化——主仓应恢复窗口后重试
     """
     t0 = time.perf_counter()
     mon_count = len(screen_mss.monitors())
@@ -97,8 +101,22 @@ def probe(body: ProbeBody):
         return JSONResponse(status_code=503, content={
             "ok": False, "status": "capture_failed",
             "error": type(exc).__name__ + ": " + str(exc), "elapsed_ms": elapsed})
-    result = macro_matcher.find(img, body.screenshot_crop, body.match_threshold)
+    try:
+        result = macro_matcher.find(img, body.screenshot_crop, body.match_threshold,
+                                    hwnd=body.window_hwnd)
+    except ValueError as exc:
+        # 畸形 crop（非法 base64/PNG）是客户端错误，返回 400 而不是 500
+        elapsed = int((time.perf_counter() - t0) * 1000)
+        return JSONResponse(status_code=400, content={
+            "ok": False, "error": "BAD_REQUEST", "detail": str(exc),
+            "elapsed_ms": elapsed})
     elapsed = int((time.perf_counter() - t0) * 1000)
+    if result.get("status") == "window_not_found":
+        return JSONResponse(status_code=409, content={
+            "ok": False, "error": "WINDOW_NOT_FOUND", "status": "window_not_found",
+            "detail": result.get("reason"), "elapsed_ms": elapsed})
+    result["matched_in_window"] = bool(body.window_hwnd is not None
+                                       and result.get("status") == "matched")
     result["ok"] = True
     result["elapsed_ms"] = elapsed
     return result
