@@ -283,21 +283,10 @@ def main() -> int:
                     f"run_id={br.get('run_id')}")
     action({"action": "hotkey", "text": "esc", "settle_seconds": 0.1})
 
-    # heal reanchor：先往自建记事本 #2 打一行字（高纹理、稳定的真实锚点），
-    # 主仓传该文本区作为新锚点图。标签条/Mica 低纹理模板实测匹配不稳，弃用。
-    force_foreground(hwnd2) or activate_via_click(hwnd2)
-    rect2t = wl.get_rect(hwnd2)
-    txt_pt = [rect2t[0] + 400, rect2t[1] + 300]
-    if win32gui.GetForegroundWindow() != hwnd2:
-        force_foreground(hwnd2) or activate_via_click(hwnd2)
-    r = action({"action": "click", "x": txt_pt[0], "y": txt_pt[1],
-                "hwnd": hwnd2, "settle_seconds": 0.1})  # 先点击放光标（type 只移鼠标不放光标）
-    r = action({"action": "type", "x": txt_pt[0], "y": txt_pt[1],
-                "text": "hello v04", "hwnd": hwnd2, "settle_seconds": 0.2})
-    ok_all &= check("M4-4pre0: 打字产生高纹理锚点区（前台=自建窗口才打的）",
-                    r.status_code == 200
-                    and win32gui.GetForegroundWindow() == hwnd2,
-                    f"error={r.json().get('error')}")
+    # heal reanchor：主仓直接给新锚点图。锚点选工具栏图标区（rel 450,86）——
+    # 静态、有纹理，且与 relocate 用的"文件"按钮锚点（rel 60,86）位置可区分，
+    # 替换生效可通过 dry_run 命中位置的迁移来证明。
+    # 红线：纯裁剪不点击；绝不点标题条/标签条（悬停 × 会关标签）。
     img2 = None
     rect2g = None
     for _ in range(3):
@@ -307,18 +296,35 @@ def main() -> int:
         if rect2a == rect2g:
             break  # 抓屏与 rect 同相（窗口没在两次采样间被拖动）
         time.sleep(0.3)
-    rel_x, rel_y = 400, 300  # 文本/光标固定在窗口相对 (400,300)（click 预置光标处）
+    rel_x, rel_y = 450, 86
     crop_b64 = None
     expect_rel = None
+    dbg_i = 0
     for cand in [(rel_x, rel_y), (150, 20)]:
         cand_b64, cand_c = crop_around(
             img2, rect2g[0] + cand[0], rect2g[1] + cand[1], 64)
         arr_c = cv2.imdecode(
             np.frombuffer(base64.b64decode(cand_b64), dtype=np.uint8), cv2.IMREAD_COLOR)
-        if float(arr_c.std()) > 2.0:
-            crop_b64, expect_center = cand_b64, list(cand_c)
+        std_c = float(arr_c.std())
+        dbg = (ROOT / "data" / "screenshots"
+               / f"debug_v04_cand{dbg_i}_rel{cand[0]}_{cand[1]}.png")
+        arr_rgb = cv2.cvtColor(arr_c, cv2.COLOR_BGR2RGB)
+        cv2.imwrite(str(dbg), arr_rgb)
+        dbg_i += 1
+        print(f"  (reanchor cand rel={cand}) std={std_c:.1f} -> {dbg.name}", flush=True)
+        if std_c > 2.0:
+            crop_b64 = cand_b64
+            expect_rel = [cand_c[0] - rect2g[0], cand_c[1] - rect2g[1]]  # 绝对→相对
             break
     ok_all &= check("M4-4pre: reanchor 模板有纹理（非退化）", crop_b64 is not None)
+    if crop_b64 is None:
+        dbg_full = ROOT / "data" / "screenshots" / "debug_v04_full.png"
+        cv2.imwrite(str(dbg_full), cv2.cvtColor(
+            np.ascontiguousarray(np.asarray(img2)), cv2.COLOR_RGB2BGR))
+        print(f"  (已存全屏截图 {dbg_full.name} 供取证)", flush=True)
+        close_owned(hwnd2)
+        print("== v0.4 verify: ABORT — 候选锚点全为退化模板，需看图定位 ==", flush=True)
+        return 1
     r = heal(macro_id, {"task_id": "t_v04", "step_id": 1, "mode": "reanchor",
                         "base_version": 2,
                         "vision": {"found": True, "crop": crop_b64}})
