@@ -19,7 +19,8 @@ from fastapi import APIRouter
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
-from app.core import macro_matcher, macro_runner, macro_store, screen_mss
+from app.core import macro_matcher, macro_recorder, macro_runner, macro_store
+from app.core import screen_mss
 
 router = APIRouter()
 
@@ -33,6 +34,16 @@ class ReplayBody(BaseModel):
 class HealBody(BaseModel):
     steps_json: Optional[str] = None
     note: Optional[str] = None
+
+
+class RecordStartBody(BaseModel):
+    task_id: str = Field(..., min_length=1)
+
+
+class RecordStopBody(BaseModel):
+    task_id: str = Field(..., min_length=1)
+    name: Optional[str] = None
+    app_signature: Optional[str] = None
 
 
 class ProbeBody(BaseModel):
@@ -68,13 +79,36 @@ def get_macro(macro_id: str):
 
 
 @router.post("/macro/record/start")
-def record_start():
-    return _not_implemented("macro recording (start)")
+def record_start(body: RecordStartBody):
+    """开启录制会话。录制期间 /execute_action 的每个成功动作自动追加步骤。"""
+    try:
+        info = macro_recorder.start(body.task_id)
+    except macro_recorder.RecordingError as exc:
+        return JSONResponse(status_code=exc.status, content={
+            "ok": False, "error": exc.error, "detail": exc.detail})
+    return {"ok": True, "recording": True, **info}
 
 
 @router.post("/macro/record/stop")
-def record_stop():
-    return _not_implemented("macro recording (stop)")
+def record_stop(body: RecordStopBody):
+    """结束录制并把步骤写入 SQLite macros 表，返回 macro_id。"""
+    try:
+        steps = macro_recorder.stop(body.task_id)
+    except macro_recorder.RecordingError as exc:
+        return JSONResponse(status_code=exc.status, content={
+            "ok": False, "error": exc.error, "detail": exc.detail})
+    if not steps:
+        return JSONResponse(status_code=400, content={
+            "ok": False, "error": "BAD_REQUEST",
+            "detail": "no steps recorded for task " + repr(body.task_id)})
+    name = body.name or ("macro_" + body.task_id + "_" + str(int(time.time())))
+    try:
+        macro_id = macro_store.create_macro(name, body.app_signature,
+                                            json.dumps(steps))
+    except macro_store.MacroNameConflictError as exc:
+        return JSONResponse(status_code=409, content={
+            "ok": False, "error": "NAME_CONFLICT", "detail": str(exc)})
+    return {"ok": True, "macro_id": macro_id, "name": name, "steps": len(steps)}
 
 
 @router.post("/macro/probe")
@@ -124,11 +158,23 @@ def probe(body: ProbeBody):
 
 @router.post("/macro/{macro_id}/replay")
 def replay(macro_id: str, body: ReplayBody):
+    """安全重放：锚点匹配驱动，逐步走 controller 同一安全管道。
+
+    - dry_run=true：只做窗口存活 + 锚点匹配报告，不产生任何输入。
+    - 409 WINDOW_NOT_FOUND：目标窗口不存在/最小化。
+    - 409 MACRO_NOT_FOUND：锚点匹配失败（附 best_score + 现场截图），终止整个宏，
+      交主仓重新识图；绝不自行用 recorded_center 兜底。
+    - 503 CAPTURE_FAILED：抓屏失败（已重试），主仓应重试本宏。
+    """
     try:
         return macro_runner.replay(macro_id, dry_run=body.dry_run,
-                                   allow_fallback=body.allow_fallback, task_id=body.task_id)
-    except macro_runner.NotImplementedYet:
-        return _not_implemented(f"replay of macro {macro_id!r}")
+                                   allow_fallback=body.allow_fallback,
+                                   task_id=body.task_id)
+    except macro_runner.ReplayError as exc:
+        content: Dict[str, Any] = {"ok": False, "error": exc.error,
+                                   "detail": exc.detail}
+        content.update(exc.data)
+        return JSONResponse(status_code=exc.status, content=content)
 
 
 @router.post("/macro/{macro_id}/heal")

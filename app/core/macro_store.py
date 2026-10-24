@@ -8,7 +8,9 @@ from __future__ import annotations
 import sqlite3
 import threading
 import time
+import uuid
 from contextlib import closing
+from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 from .config import DB_PATH, ensure_dirs
@@ -80,6 +82,66 @@ def get_macro(macro_id: str) -> Optional[Dict[str, Any]]:
 
 class NonceReplayError(Exception):
     pass
+
+
+class MacroNameConflictError(Exception):
+    pass
+
+
+def _now() -> str:
+    return datetime.now().isoformat(timespec="milliseconds")
+
+
+def create_macro(name: str, app_signature: Optional[str],
+                 steps_json: str) -> str:
+    macro_id = "m_" + uuid.uuid4().hex[:12]
+    now = _now()
+    try:
+        with _WRITE_LOCK, closing(_connect()) as con, con:
+            con.execute(
+                "INSERT INTO macros (id, name, app_signature, screen_signature, "
+                "version, success_count, fail_count, last_used, created_at, "
+                "updated_at, steps_json) VALUES (?, ?, ?, NULL, 1, 0, 0, NULL, ?, ?, ?)",
+                (macro_id, name, app_signature, now, now, steps_json))
+    except sqlite3.IntegrityError:
+        raise MacroNameConflictError("macro name already exists: " + str(name))
+    return macro_id
+
+
+def create_run(run_id: str, macro_id: str, task_id: Optional[str],
+               started_at: str, steps_total: int) -> None:
+    with _WRITE_LOCK, closing(_connect()) as con, con:
+        con.execute(
+            "INSERT INTO macro_runs (run_id, macro_id, task_id, started_at, "
+            "finished_at, status, steps_total, steps_ok, fail_step_index, "
+            "fail_reason, fail_screenshot_path) "
+            "VALUES (?, ?, ?, ?, NULL, 'running', ?, NULL, NULL, NULL, NULL)",
+            (run_id, macro_id, task_id, started_at, int(steps_total)))
+
+
+def finish_run(run_id: str, status: str, finished_at: str, steps_ok: int,
+               fail_step_index: Optional[int], fail_reason: Optional[str],
+               fail_screenshot_path: Optional[str]) -> None:
+    with _WRITE_LOCK, closing(_connect()) as con, con:
+        con.execute(
+            "UPDATE macro_runs SET finished_at = ?, status = ?, steps_ok = ?, "
+            "fail_step_index = ?, fail_reason = ?, fail_screenshot_path = ? "
+            "WHERE run_id = ?",
+            (finished_at, status, int(steps_ok), fail_step_index, fail_reason,
+             fail_screenshot_path, run_id))
+
+
+def bump_stats(macro_id: str, success: bool) -> None:
+    now = _now()
+    with _WRITE_LOCK, closing(_connect()) as con, con:
+        if success:
+            con.execute(
+                "UPDATE macros SET success_count = success_count + 1, "
+                "last_used = ?, updated_at = ? WHERE id = ?", (now, now, macro_id))
+        else:
+            con.execute(
+                "UPDATE macros SET fail_count = fail_count + 1, "
+                "last_used = ?, updated_at = ? WHERE id = ?", (now, now, macro_id))
 
 
 def consume_nonce(nonce: str, exp: int) -> None:

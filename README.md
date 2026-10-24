@@ -101,9 +101,23 @@ query：`monitor=1|0|all`（0=全屏联合区，all=各屏数组）、`fmt=png|j
 |---|---|---|
 | GET | /macro | 已可用（读 SQLite，初始返回空数组） |
 | GET | /macro/{id} | 已可用（404 或详情） |
-| POST | /macro/record/start / stop | 501（v0.3） |
-| POST | /macro/{id}/replay | 501（v0.3；body 含 dry_run / allow_fallback / task_id） |
-| POST | /macro/{id}/heal | 501（v0.3；主仓回填修补锚点） |
+| POST | /macro/record/start | 已可用（`{"task_id":"..."}`；录制期间 execute_action 自动追加步骤） |
+| POST | /macro/record/stop | 已可用（`{"task_id","name","app_signature"}`；写库返回 macro_id） |
+| POST | /macro/{id}/replay | 已可用（dry_run / allow_fallback / task_id） |
+| POST | /macro/{id}/heal | 501（主仓回填修补锚点） |
+
+录制语义：`/execute_action` 请求新增可选 `hwnd`（录制提示）；每个成功动作自动
+追加步骤——click 系动作锚点取自**动作前**审计截图（64x64，重放匹配的是点击前
+的样子），type/hotkey 记 text 与录制时中心点。steps_json 结构：
+`{"step_id","action","hwnd","target":{"type":"anchor|none","image_b64","recorded_center"},"text","wait_after_ms"}`。
+
+重放语义（每步管道）：窗口存活（实时 get_rect，409 `WINDOW_NOT_FOUND`）→
+click 在窗口 ROI 内匹配锚点（匹配成功才产生坐标，**绝不使用 recorded_center
+推算**）→ 走 `controller.run_action` 同一安全管道（Fail-Safe/锁/前后审计截图）。
+`not_found` → 409 `MACRO_NOT_FOUND`（附 best_score + 现场截图，终止整个宏，
+交主仓重新识图；allow_fallback 为保留字段，当前不做任何兜底）；
+抓屏失败重试 2 次后 → 503 `CAPTURE_FAILED`。`dry_run=true` 只出匹配报告。
+每条 run 写 `macro_runs`（run_id/steps_ok/fail_step_index/fail_reason/fail_screenshot_path）。
 
 所有 `/macro/*` 同样强校验 `X-Ghost-Token`（无 token 先 401）。重放落地时必须走
 `app/core/controller.py` 的同一安全管道。存储：`data/ghost.db`（macros /

@@ -63,6 +63,12 @@ def get_rect(hwnd: int) -> Optional[List[int]]:
     return [int(left), int(top), int(right), int(bottom)]
 
 
+def foreground_hwnd() -> Optional[int]:
+    """当前前台窗口 hwnd；无则 None。"""
+    hwnd = win32gui.GetForegroundWindow()
+    return int(hwnd) if hwnd else None
+
+
 def wait_stable(hwnd: int, timeout: float = 2.0, stable_frames: int = 3,
                 max_drift_px: int = 1) -> bool:
     """连续 stable_frames 次 GetWindowRect 漂移 ≤ max_drift_px 才算稳定；超时 False。"""

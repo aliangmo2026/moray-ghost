@@ -5,6 +5,7 @@
 """
 from __future__ import annotations
 
+import logging
 import threading
 import time
 from datetime import datetime
@@ -12,6 +13,8 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from . import backend, screen_mss
 from .backend import FailSafeException
+
+LOG = logging.getLogger("moray-ghost.controller")
 
 ACTION_LOCK = threading.Lock()      # 桌面动作全局串行（进程内锁）
 DRIFT_LIMIT_PX = 3                  # moveTo 后实际落点允许的最大偏差
@@ -266,8 +269,17 @@ def _run_locked_action(action: str, xi: Optional[int], yi: Optional[int],
     return body
 
 
-def _scene_shot(fmt: str, quality: int) -> Tuple[str, str]:
-    """Fail-Safe 现场截图：全分辨率落盘 + 缩放 b64。"""
-    img, _ = screen_mss.grab(1)
-    path = str(screen_mss.save_audit(img, "failsafe", fmt, quality))
-    return path, screen_mss.b64_of(img, fmt, quality, 0.5)
+def _scene_shot(fmt: str, quality: int) -> Tuple[Optional[str], Optional[str]]:
+    """Fail-Safe 现场截图：全分辨率落盘 + 缩放 b64。
+
+    失败安全：抓屏本身可能正在突发故障（此时恰恰是 Fail-Safe 触发的常见时刻），
+    这里绝不能再抛异常，否则原始的 FailSafeTriggered 会被掩盖成裸 500。
+    失败时返回 (None, None)，响应中相应字段为 null。
+    """
+    try:
+        img, _ = screen_mss.grab(1)
+        path = str(screen_mss.save_audit(img, "failsafe", fmt, quality))
+        return path, screen_mss.b64_of(img, fmt, quality, 0.5)
+    except Exception as exc:  # noqa: BLE001
+        LOG.warning("scene shot failed while handling fail-safe: %s", exc)
+        return None, None

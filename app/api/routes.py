@@ -5,15 +5,20 @@
 from __future__ import annotations
 
 import base64
+import logging
 import time
 from typing import Any, Dict, Optional, Union
 
 from fastapi import APIRouter, Query
 from fastapi.responses import JSONResponse
+from PIL import Image
 from pydantic import BaseModel, Field
 
-from app.core import backend, controller, screen_mss
+from app.core import backend, controller, macro_matcher, macro_recorder
+from app.core import screen_mss, window_locator
 from app.core.config import DB_PATH, JPEG_QUALITY, SERVICE, VERSION
+
+LOG = logging.getLogger("moray-ghost.routes")
 
 router = APIRouter()
 
@@ -108,13 +113,44 @@ class ExecuteRequest(BaseModel):
     # 缺省时 x/y 为物理像素，行为与 v0.2 完全一致。
     source_width: Optional[int] = None
     source_height: Optional[int] = None
+    # 录制提示：录制会话期间作为步骤的 hwnd（缺省用动作发生时的前台窗口）
+    hwnd: Optional[int] = None
 
 
 @router.post("/execute_action")
 def execute_action(req: ExecuteRequest) -> Dict[str, Any]:
     try:
-        return controller.run_action(req.model_dump())
+        result = controller.run_action(req.model_dump())
     except controller.ActionError as exc:
         content: Dict[str, Any] = {"ok": False, "error": exc.error, "detail": exc.detail}
         content.update(exc.data)
         return JSONResponse(status_code=exc.status, content=content)
+    # 录制会话：动作成功后自动追加步骤。不盲点由 controller 保证（前后审计截图
+    # 已落盘）；锚点取自动作【前】截图（重放匹配的是点击前的样子）。
+    if macro_recorder.active_task_id() is not None:
+        try:
+            _record_step(req, result)
+        except Exception as exc:  # noqa: BLE001  录制失败不影响动作本身
+            LOG.warning("record step failed: %s", exc)
+    return result
+
+
+def _record_step(req: ExecuteRequest, result: Dict[str, Any]) -> None:
+    action = req.action.strip().lower()
+    hwnd = req.hwnd or window_locator.foreground_hwnd()
+    recorded_center = result.get("resolved_physical")
+    target: Dict[str, Any] = {"type": "none", "image_b64": None,
+                              "recorded_center": recorded_center}
+    if action in ("click", "double_click", "right_click"):
+        before_path = result.get("before_screenshot_path")
+        if before_path and recorded_center:
+            img = Image.open(before_path)
+            b64, _center = macro_matcher.crop_around(
+                img, int(recorded_center[0]), int(recorded_center[1]), 64)
+            target = {"type": "anchor", "image_b64": b64,
+                      "recorded_center": [int(recorded_center[0]),
+                                          int(recorded_center[1])]}
+    step = {"action": action, "hwnd": int(hwnd) if hwnd else None,
+            "target": target, "text": req.text,
+            "wait_after_ms": int(req.settle_seconds * 1000)}
+    macro_recorder.add_step(step)
