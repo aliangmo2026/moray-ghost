@@ -163,6 +163,12 @@ def run_action(payload: Dict[str, Any]) -> Dict[str, Any]:
             raise SafetyError(
                 f"coordinates ({xi},{yi}) fall inside a Fail-Safe corner", x=xi, y=yi)
 
+    # 输入审计：每一次真实桌面输入在此留一行账（本模块是全仓唯一动鼠标的咽喉，
+    # 宏重放/任务/直接动作都汇到这里）；与 logs/access.log 的 HTTP 层记录互相印证，
+    # "鼠标为什么动了"从此可事后归因。type 的文本内容不记账（只记坐标）。
+    LOG.info("input_audit action=%s resolved=%s monitor=%s",
+             action, resolved_physical, monitor)
+
     with ACTION_LOCK:
         return _run_locked_action(action, xi, yi, text, keys, monitor, settle,
                                   fmt, quality, scale, include_before_b64,

@@ -20,10 +20,13 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 import pyperclip  # noqa: E402
+import pyautogui  # noqa: E402
 import requests  # noqa: E402
+import win32con  # noqa: E402
 import win32gui  # noqa: E402
 
 from app.core import window_locator as wl  # noqa: E402
+from app.core.backend import release_all_modifiers  # noqa: E402
 from app.core.screen_mss import grab  # noqa: E402
 
 H = {"X-Ghost-Token": ""}
@@ -39,6 +42,74 @@ def check(name: str, ok: bool, detail: str = "") -> bool:
     tag = "PASS" if ok else "FAIL"
     print(f"[{tag}] {name}" + (f"  | {detail}" if detail else ""), flush=True)
     return ok
+
+
+def point_is_ours(pt: tuple, hwnd: int) -> bool:
+    """纪律级门禁：确认屏幕上 pt 像素的根窗口是自建窗口（点击前必查）。"""
+    try:
+        leaf = win32gui.WindowFromPoint(pt)
+        return win32gui.GetAncestor(leaf, 2) == hwnd  # GA_ROOT
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def activate_via_click(hwnd: int, retries: int = 3) -> bool:
+    """确定性前台：TOPMOST 抬升 → WindowFromPoint 验证落点归属 → 物理点击
+    窗口正中（编辑区）。与 test_macro 的 v0.5 纪律实现一致。"""
+    for i in range(retries):
+        rect = wl.get_rect(hwnd)
+        if rect is None:
+            return False
+        pt = (rect[0] + (rect[2] - rect[0]) // 2,
+              rect[1] + (rect[3] - rect[1]) // 2)
+        if not point_is_ours(pt, hwnd):
+            win32gui.SetWindowPos(hwnd, win32con.HWND_TOPMOST, 0, 0, 0, 0,
+                                  win32con.SWP_NOMOVE | win32con.SWP_NOSIZE)
+            time.sleep(0.35)
+            continue
+        r, _body = action({"action": "click", "x": pt[0], "y": pt[1],
+                           "settle_seconds": 0.1})
+        time.sleep(0.3)
+        if r.status_code == 200 and win32gui.GetForegroundWindow() == hwnd:
+            return True
+    return win32gui.GetForegroundWindow() == hwnd
+
+
+def force_foreground(hwnd: int) -> bool:
+    """多策略前台锁定（与 test_macro 的 v0.5 纪律实现一致）；失败返回 False。"""
+    try:
+        win32gui.ShowWindow(hwnd, win32con.SW_MINIMIZE)
+        time.sleep(0.25)
+        win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
+        time.sleep(0.4)
+        if win32gui.GetForegroundWindow() == hwnd:
+            return True
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        pyautogui.keyDown("alt")
+        try:
+            win32gui.SetForegroundWindow(hwnd)
+        finally:
+            pyautogui.keyUp("alt")
+            release_all_modifiers()
+        time.sleep(0.2)
+        if win32gui.GetForegroundWindow() == hwnd:
+            return True
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        win32gui.SetWindowPos(hwnd, win32con.HWND_TOPMOST, 0, 0, 0, 0,
+                              win32con.SWP_NOMOVE | win32con.SWP_NOSIZE)
+        time.sleep(0.1)
+        win32gui.SetWindowPos(hwnd, win32con.HWND_NOTOPMOST, 0, 0, 0, 0,
+                              win32con.SWP_NOMOVE | win32con.SWP_NOSIZE)
+        time.sleep(0.3)
+        if win32gui.GetForegroundWindow() == hwnd:
+            return True
+    except Exception:  # noqa: BLE001
+        pass
+    return win32gui.GetForegroundWindow() == hwnd
 
 
 def action(payload: dict):
@@ -81,6 +152,9 @@ def main() -> int:
     time.sleep(0.4)
     rect1 = wl.get_rect(hwnd1)
     editor1 = [rect1[0] + 400, rect1[1] + 300]
+    # v0.5 纪律对齐：全屏用户窗口（如 ZCode）会压住仅 TOPMOST 的测试窗口，
+    # 带 hwnd 的 API click 会被落点归属门禁 400 拒绝——先做确定性前台锁定。
+    force_foreground(hwnd1) or activate_via_click(hwnd1)
     r, body = action({"action": "click", "x": editor1[0], "y": editor1[1],
                       "hwnd": hwnd1, "settle_seconds": 0.1})
     ok_all &= check("V1: 记事本#1 激活+点击", r.status_code == 200
@@ -122,8 +196,8 @@ def main() -> int:
         wg2.MoveWindow(hwnd2, 900, 500, 800, 600, True)
         wl.wait_stable(hwnd2, timeout=4.0)
         time.sleep(0.6)
-        # 真激活 #1（编辑区点击；给已 TOPMOST 的窗口重设 TOPMOST 是无操作，
-        # 不会把前台还给 #1——实测踩过）
+        # 真激活 #1（先走 v0.5 纪律的多策略前台锁定；再退回编辑区点击兜底）
+        force_foreground(hwnd1) or activate_via_click(hwnd1)
         if win32gui.GetForegroundWindow() != hwnd1:
             r, body = action({"action": "click", "x": 600, "y": 500,
                               "hwnd": hwnd1, "settle_seconds": 0.1})

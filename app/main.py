@@ -9,7 +9,7 @@ from __future__ import annotations
 import logging
 import logging.handlers
 from contextlib import asynccontextmanager
-from typing import Awaitable, Callable
+from typing import Awaitable, Callable, Optional
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
@@ -23,6 +23,7 @@ config.ensure_token()
 
 
 def _setup_logging() -> logging.Logger:
+    global _FILE_HANDLER
     logger = logging.getLogger("moray-ghost")
     if logger.handlers:
         return logger
@@ -35,10 +36,30 @@ def _setup_logging() -> logging.Logger:
         config.LOG_DIR / "ghost.log", maxBytes=1_000_000, backupCount=3, encoding="utf-8")
     file_handler.setFormatter(fmt)
     logger.addHandler(file_handler)
+    _FILE_HANDLER = file_handler
     return logger
 
 
+_FILE_HANDLER: Optional[logging.Handler] = None
+
+
 LOG = _setup_logging()
+
+
+def _setup_access_log() -> None:
+    """uvicorn.access → logs/access.log（独立轮转，不挤占应用日志）。
+
+    HTTP 层全量留痕（来源地址/方法/路径/状态码）：对 /execute_action、/task、
+    /macro 重放的每一次调用都可事后归因。必须在 lifespan 里挂 handler——
+    uvicorn 的 dictConfig 在 run() 期执行，会重置 import 期挂上去的 handler。
+    """
+    handler = logging.handlers.RotatingFileHandler(
+        config.LOG_DIR / "access.log", maxBytes=2_000_000, backupCount=2,
+        encoding="utf-8")
+    handler.setFormatter(logging.Formatter("%(asctime)s %(message)s"))
+    access = logging.getLogger("uvicorn.access")
+    if handler not in access.handlers:
+        access.addHandler(handler)
 
 
 @asynccontextmanager
@@ -46,6 +67,7 @@ async def lifespan(_: FastAPI):
     macro_store.init_db()
     backend.release_all_modifiers()  # 启动时清一次可能残留的修饰键（进程曾中途被杀等）
     task_queue.start_dispatcher()    # v0.5：任务 FIFO 单工作线程（串行派发）
+    _setup_access_log()
     LOG.info("moray-ghost v%s listening on http://%s:%s (dpi_aware=%s)",
              config.VERSION, config.HOST, config.PORT, screen_mss.DPI_AWARE)
     LOG.info("fail_safe_enabled=true token_required=true intent_token=%s",
