@@ -77,6 +77,36 @@ class InputBackend(ABC):
     def key_names(self) -> List[str]:
         ...
 
+    @abstractmethod
+    def mouse_down(self, button: str = "left") -> None:
+        ...
+
+    @abstractmethod
+    def mouse_up(self, button: str = "left") -> None:
+        ...
+
+    @abstractmethod
+    def scroll(self, dy: int) -> None:
+        ...
+
+
+def release_pointer_buttons() -> None:
+    """强制释放所有鼠标键——绝不把"按住"状态泄漏到系统（拖拽异常路径的 finally 用）。
+
+    与 release_all_modifiers 同哲学：清理动作本身不能因为光标恰好在角落而中断，
+    所以临时关闭 Fail-Safe。keyUp/mouseUp 对未按下的键是无害空操作。
+    """
+    prev = pyautogui.FAILSAFE
+    pyautogui.FAILSAFE = False
+    try:
+        for btn in ("left", "middle", "right"):
+            try:
+                pyautogui.mouseUp(button=btn)
+            except Exception:
+                pass
+    finally:
+        pyautogui.FAILSAFE = prev
+
 
 class PyAutoGUIBackend(InputBackend):
     def position(self) -> Tuple[int, int]:
@@ -89,6 +119,16 @@ class PyAutoGUIBackend(InputBackend):
     def click(self, clicks: int = 1, button: str = "left") -> None:
         # 不传坐标：调用前已完成 moveTo + 漂移校验，避免二次移动引入竞态
         pyautogui.click(clicks=int(clicks), interval=0.08 if clicks > 1 else 0.0, button=button)
+
+    def mouse_down(self, button: str = "left") -> None:
+        pyautogui.mouseDown(button=button)
+
+    def mouse_up(self, button: str = "left") -> None:
+        pyautogui.mouseUp(button=button)
+
+    def scroll(self, dy: int) -> None:
+        # 不传坐标：调用前已完成 moveTo，避免二次移动引入竞态
+        pyautogui.scroll(int(dy))
 
     def write_text(self, text: str, interval: float = 0.02) -> None:
         text = str(text)
@@ -124,6 +164,18 @@ def move_to(x: int, y: int) -> None:
 
 def click(clicks: int = 1, button: str = "left") -> None:
     BACKEND.click(clicks=clicks, button=button)
+
+
+def mouse_down(button: str = "left") -> None:
+    BACKEND.mouse_down(button=button)
+
+
+def mouse_up(button: str = "left") -> None:
+    BACKEND.mouse_up(button=button)
+
+
+def scroll(dy: int) -> None:
+    BACKEND.scroll(dy)
 
 
 def write_text(text: str, interval: float = 0.02) -> None:

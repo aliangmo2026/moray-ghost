@@ -49,10 +49,19 @@ HTTP 层   FastAPI @ 127.0.0.1:8030，全部接口挂 /api/ghost/ 前缀
    ▼
 统一安全管道  app/core/controller.py
    │      全局动作串行锁 · 坐标防线（越界/Fail-Safe 角点/漂移>3px） · Fail-Safe 常开 · 前后审计截图
+   │      v0.6：drag 平滑轨迹（起点+终点归属门禁、逐点 Fail-Safe、finally 强制释放鼠标键）
+   │            scroll 平滑分片（作用点归属门禁） · 动作日志入账点（input_audit 同咽喉）
    ▼
-执行后端  backend.py（pyautogui 输入） · screen_mss.py（mss 单线程抓屏） · window_locator.py（win32）
+执行后端  backend.py（pyautogui 输入 + mouse_down/up/scroll 原语）
+   │      screen_mss.py（mss 单线程抓屏） · window_locator.py（win32）
+   ▼
+网页通道（v0.6 M2） app/core/browser_driver.py（playwright connect_over_cdp）
+          只连本地调试端口（GHOST_BROWSER_CDP_URL，默认 127.0.0.1:9222，禁 bundled browser）
+          元素定位 role/text/css/placeholder/label/testid；多候选未给 nth → 409 绝不猜
+          冻结门禁 / input_audit(channel=cdp) / ACTION_LOCK 与原生通道同级
 
-观测面：GET /dashboard（任务轮播 + 实时抓图 + EMERGENCY STOP）    GET /api/ghost/dashboard/state
+观测面：GET /dashboard（任务轮播 + 实时动作日志 + 实时抓图 + EMERGENCY STOP）
+        GET /api/ghost/dashboard/state · GET /api/ghost/actions/recent（+ /actions/thumb/{name}）
 反哺面：POST /api/ghost/macro/{id}/heal（主仓 Iris 视觉回填锚点，乐观锁 version）
 ```
 
@@ -70,10 +79,13 @@ HTTP 层   FastAPI @ 127.0.0.1:8030，全部接口挂 /api/ghost/ 前缀
   `created → queued → running → done|degraded|canceled`；直接调 `/execute_action`
   的零散动作仍走底层锁。
 - **紧急冻结（v0.5）**：`POST /api/ghost/emergency_stop` 清空队列 + 冻结，
-  冻结期 start/resume/execute_action/宏重放一律 503 `GHOST_FROZEN`；
+  冻结期 start/resume/execute_action/宏重放/browser action 一律 503 `GHOST_FROZEN`；
   `POST /api/ghost/emergency_stop/release` 解冻。
 - **坐标防线**：越界 / 落入 Fail-Safe 角落（保护半径 2px）/ moveTo 后漂移 >3px
-  一律 400 `SAFETY_BLOCKED`。
+  一律 400 `SAFETY_BLOCKED`；drag 轨迹逐点复核（落角中途 mouseUp，绝不留按住态）。
+- **动作审计（v0.6）**：`controller.run_action` 是唯一动桌面咽喉，每次真实输入记
+  `input_audit`（ghost.log）；HTTP 层全量落 `logs/access.log`（来源/方法/路径/状态码）；
+  驾驶舱动作日志（内存环 200 条）含执行后缩略图，冻结期被拒动作同样入账。
 - **DPI 感知**：Windows 下在 `import mss` / `import pyautogui` 之前调用
   `SetProcessDpiAwareness(2)`，保证截图分辨率与点击坐标一致（物理像素）。
 - **mss 实例管理**：BitBlt 抓屏全部收口到单一专用 capture 线程（一个 mss 实例、

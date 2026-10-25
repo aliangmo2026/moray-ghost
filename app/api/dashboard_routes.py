@@ -12,12 +12,13 @@
 """
 from __future__ import annotations
 
+import io
 from typing import Any, Dict
 
 from fastapi import APIRouter
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, Response
 
-from app.core import task_queue
+from app.core import action_log, task_queue
 from app.core.config import SERVICE, VERSION
 
 router = APIRouter()  # 页面挂根路径 /dashboard；state 走下方 ghost 前缀
@@ -37,6 +38,32 @@ def dashboard_state() -> Dict[str, Any]:
         "running": task_queue.running_view(),
         "queued": task_queue.snapshot(),
     }
+
+
+@api_router.get("/actions/recent")
+def actions_recent(limit: int = 50) -> Dict[str, Any]:
+    """驾驶舱实时动作日志（v0.6 M3，只读，与 /screenshot 同级放行）。"""
+    return {"ok": True, "count": min(limit, 200), "actions": action_log.recent(limit)}
+
+
+@api_router.get("/actions/thumb/{name}")
+def actions_thumb(name: str):
+    """动作执行后截图的 96px 缩略（basename 白名单，防路径穿越）。"""
+    from PIL import Image
+    path = action_log.resolve_thumb(name)
+    if path is None:
+        return JSONResponse(status_code=404, content={
+            "ok": False, "error": "NOT_FOUND", "detail": "thumb not found"})
+    try:
+        img = Image.open(path)
+        img.thumbnail((96, 96))
+        buf = io.BytesIO()
+        img.convert("RGB").save(buf, format="JPEG", quality=70)
+    except Exception as exc:  # noqa: BLE001
+        return JSONResponse(status_code=500, content={
+            "ok": False, "error": "INTERNAL_ERROR",
+            "detail": type(exc).__name__ + ": " + str(exc)})
+    return Response(content=buf.getvalue(), media_type="image/jpeg")
 
 
 @router.get("/dashboard")
@@ -103,6 +130,14 @@ _PAGE = """<!DOCTYPE html>
   #toast { position: fixed; top: 12px; right: 12px; background: #30363d;
            color: #fff; padding: 8px 12px; border-radius: 8px; font-size: 12px;
            display: none; max-width: 340px; }
+  #actlog { max-height: 260px; overflow-y: auto; font-size: 12px; }
+  .act-row { display: flex; align-items: center; gap: 8px; padding: 3px 0;
+             border-bottom: 1px solid #21262d; }
+  .act-row img { border-radius: 4px; flex: 0 0 auto; background: #000; }
+  .act-ts { color: #8b949e; flex: 0 0 auto; }
+  .act-ch { color: #58a6ff; flex: 0 0 auto; }
+  .act-d { color: #8b949e; overflow: hidden; text-overflow: ellipsis;
+           white-space: nowrap; flex: 1 1 auto; }
 </style>
 </head>
 <body>
@@ -113,6 +148,11 @@ _PAGE = """<!DOCTYPE html>
 <div class="card">
   <h2>任务队列 · 状态轮播</h2>
   <div id="carousel" class="st-idle">loading…</div>
+</div>
+
+<div class="card">
+  <h2>实时动作日志（每秒刷新）</h2>
+  <div id="actlog" class="st-idle">loading…</div>
 </div>
 
 <div class="card">
@@ -226,9 +266,40 @@ $("release").addEventListener("click", function () {
     .catch(function (e) { toast("请求失败: " + e); });
 });
 
-pollState(); pollShot();
+function pollActions() {
+  fetch("/api/ghost/actions/recent?limit=30", { cache: "no-store" })
+    .then(function (r) { return r.json(); })
+    .then(function (d) {
+      var box = $("actlog");
+      var items = d.actions || [];
+      if (!items.length) {
+        box.className = "st-idle";
+        box.textContent = "idle — no actions yet";
+        return;
+      }
+      box.className = "";
+      var html = "";
+      items.forEach(function (a) {
+        var th = a.thumb
+          ? '<img src="/api/ghost/actions/thumb/' + a.thumb + '" width="56" height="42">'
+          : '<span style="width:56px"></span>';
+        html += '<div class="act-row">' + th
+          + '<span class="act-ts">' + esc(a.ts.slice(11, 23)) + '</span>'
+          + '<b class="act-ch">' + esc(a.channel) + '</b> '
+          + esc(a.action)
+          + '<span class="act-d">' + esc(JSON.stringify(a.detail || {})) + '</span>'
+          + '<span class="' + (a.ok ? 'st-running' : 'st-queued') + '">'
+          + (a.ok ? 'OK ' : 'ERR ') + esc(a.status) + '</span></div>';
+      });
+      box.innerHTML = html;
+    })
+    .catch(function () {});
+}
+
+pollState(); pollShot(); pollActions();
 setInterval(pollState, 1000);
 setInterval(pollShot, 5000);
+setInterval(pollActions, 1000);
 setInterval(renderCarousel, 2000);
 </script>
 </body>

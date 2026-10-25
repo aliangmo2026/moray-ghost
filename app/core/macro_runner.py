@@ -197,6 +197,42 @@ def replay(macro_id: str, dry_run: bool = False, allow_fallback: bool = False,
                 rc = (step.get("target") or {}).get("recorded_center")
                 if rc:
                     payload["x"], payload["y"] = int(rc[0]), int(rc[1])
+        elif action in ("drag", "scroll"):
+            # v0.6 M1：拖拽按录制轨迹（点位+节奏）复现，滚轮按 dy/smooth 复现；
+            # 无锚点匹配语义（坐标即真相），但同样走 controller 完整安全管道。
+            result["status"] = "matched" if dry_run else "pending"
+            if dry_run:
+                result["dry_run"] = True
+                results.append(result)
+                steps_ok += 1
+                continue
+            rc = (step.get("target") or {}).get("recorded_center")
+            if action == "drag":
+                pts = step.get("points")
+                if not isinstance(pts, list) or len(pts) < 2:
+                    failure = ReplayError(500, "INTERNAL_ERROR",
+                                          "step " + repr(step_id)
+                                          + ": drag step has no recorded points")
+                    result["status"] = "bad_step"
+                    results.append(result)
+                    break
+                payload = {"action": "drag", "points": pts}
+                if isinstance(step.get("points_t"), list):
+                    payload["points_t"] = step["points_t"]
+            else:
+                payload = {"action": "scroll", "dy": int(step.get("dy") or 0),
+                           "smooth": bool(step.get("smooth"))}
+            if rc:
+                payload["x"], payload["y"] = int(rc[0]), int(rc[1])
+            elif action == "drag":
+                payload["x"], payload["y"] = int(pts[0][0]), int(pts[0][1])
+            else:
+                failure = ReplayError(500, "INTERNAL_ERROR",
+                                      "step " + repr(step_id)
+                                      + ": scroll step has no recorded center")
+                result["status"] = "bad_step"
+                results.append(result)
+                break
         else:
             failure = ReplayError(500, "INTERNAL_ERROR",
                                   "step " + repr(step_id) + ": unsupported action "

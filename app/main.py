@@ -16,7 +16,8 @@ from fastapi.responses import JSONResponse
 
 from app.core import screen_mss  # 先于其他 app 模块：尽早设置 DPI
 from app.core import auth, backend, config, macro_store, task_queue
-from app.api import dashboard_routes, environment_routes, macro_routes, routes, task_routes, window_routes
+from app.api import browser_routes, dashboard_routes, environment_routes
+from app.api import macro_routes, routes, task_routes, window_routes
 
 config.ensure_dirs()
 config.ensure_token()
@@ -84,14 +85,21 @@ _OPEN_PATHS = {"/health", "/screenshot", "/docs", "/redoc", "/openapi.json", "/f
 
 
 _GHOST_PREFIX = "/api/ghost"
-# 探活/监控放行：health、screenshot（v0.2 起）与 dashboard 只读状态（v0.5）
+# 探活/监控放行：health、screenshot（v0.2 起）与 dashboard 只读状态（v0.5）、
+# 驾驶舱动作日志与缩略图（v0.6 M3，与 /screenshot 同级：本机只读、信息量相当）
 _OPEN_PATHS = {_GHOST_PREFIX + "/health", _GHOST_PREFIX + "/screenshot",
-               _GHOST_PREFIX + "/dashboard/state"}
+               _GHOST_PREFIX + "/dashboard/state",
+               _GHOST_PREFIX + "/actions/recent"}
+_THUMB_PREFIX = _GHOST_PREFIX + "/actions/thumb/"
 
 
 def _is_protected(path: str) -> bool:
-    """ghost 全部接口走 /api/ghost 前缀；仅 health 与 screenshot 探活放行。"""
-    return path.startswith(_GHOST_PREFIX + "/") and path not in _OPEN_PATHS
+    """ghost 全部接口走 /api/ghost 前缀；仅探活/只读面板数据放行。"""
+    if not path.startswith(_GHOST_PREFIX + "/"):
+        return False
+    if path in _OPEN_PATHS or path.startswith(_THUMB_PREFIX):
+        return False
+    return True
 
 
 @app.middleware("http")
@@ -111,5 +119,6 @@ app.include_router(macro_routes.router)
 app.include_router(window_routes.router)
 app.include_router(environment_routes.router)
 app.include_router(task_routes.router)
+app.include_router(browser_routes.router)
 app.include_router(dashboard_routes.router)
 app.include_router(dashboard_routes.api_router)

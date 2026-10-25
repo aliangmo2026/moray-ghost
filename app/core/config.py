@@ -17,10 +17,13 @@ ENV_PATH = BASE_DIR / ".env"
 load_dotenv(ENV_PATH)
 
 SERVICE = "moray-ghost"
-VERSION = "0.5.0"
+VERSION = "0.6.0"
 
 HOST = os.getenv("GHOST_HOST", "127.0.0.1")
 PORT = int(os.getenv("GHOST_PORT", "8030"))
+
+# CDP 浏览器接管（v0.6 M2）：仅允许 loopback 调用点（browser_driver 使用前再校验一次）
+BROWSER_CDP_URL = os.getenv("GHOST_BROWSER_CDP_URL", "http://127.0.0.1:9222").strip()
 
 TOKEN = os.getenv("GHOST_TOKEN", "").strip()
 INTENT_TOKEN_ENABLED = os.getenv("GHOST_INTENT_TOKEN_ENABLED", "false").strip().lower() in ("1", "true", "yes")

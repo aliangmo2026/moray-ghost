@@ -7,7 +7,7 @@ from __future__ import annotations
 import base64
 import logging
 import time
-from typing import Any, Dict, Optional, Union
+from typing import Any, Dict, List, Optional, Union
 
 from fastapi import APIRouter, Query
 from fastapi.responses import JSONResponse
@@ -15,7 +15,7 @@ from PIL import Image
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.core import backend, controller, macro_matcher, macro_recorder
-from app.core import environment, screen_mss, task_queue, window_locator
+from app.core import action_log, environment, screen_mss, task_queue, window_locator
 from app.core.config import DB_PATH, JPEG_QUALITY, SERVICE, VERSION
 
 LOG = logging.getLogger("moray-ghost.routes")
@@ -101,7 +101,7 @@ def screenshot(
 class ExecuteRequest(BaseModel):
     model_config = ConfigDict(extra="allow")  # 主仓多传的字段直接忽略，绝不 422
 
-    action: str = Field(..., description="click|double_click|right_click|move|type|hotkey")
+    action: str = Field(..., description="click|double_click|right_click|move|type|hotkey|drag|scroll")
     x: Optional[int] = None
     y: Optional[int] = None
     text: Optional[str] = None
@@ -111,6 +111,17 @@ class ExecuteRequest(BaseModel):
     fmt: str = "jpeg"
     quality: int = Field(default=JPEG_QUALITY, ge=10, le=95)
     scale: float = Field(default=0.5, ge=0.1, le=1.0)
+    # drag（v0.6 M1）：x2/y2 插值轨迹，或 points 显式轨迹（x/y 缺省取 points[0]）
+    x2: Optional[int] = None
+    y2: Optional[int] = None
+    points: Optional[List[List[int]]] = Field(default=None,
+                                              description="drag 轨迹点 [[x,y],...]，≤2000 点")
+    points_t: Optional[List[int]] = Field(default=None,
+                                          description="drag 轨迹毫秒时间戳（相对起点，非递减）")
+    duration_ms: Optional[int] = Field(default=None, ge=100, le=10000)
+    # scroll（v0.6 M1）：dy 滚动幅度（+上/-下），smooth 分片平滑
+    dy: Optional[int] = None
+    smooth: Optional[bool] = None
     # 源图坐标换算：同时给出二者时，x/y 视为缩放源图（original_width=source_width）上的坐标；
     # 缺省时 x/y 为物理像素，行为与 v0.2 完全一致。
     source_width: Optional[int] = None
@@ -121,8 +132,10 @@ class ExecuteRequest(BaseModel):
 
 @router.post("/execute_action")
 def execute_action(req: ExecuteRequest) -> Dict[str, Any]:
-    # 冻结门禁（v0.5）：emergency stop 期间拒绝一切桌面输入
+    # 冻结门禁（v0.5）：emergency stop 期间拒绝一切桌面输入（被拒也入账，驾驶舱可见）
     if task_queue.is_frozen():
+        action_log.record("native", req.action,
+                          {"x": req.x, "y": req.y, "monitor": req.monitor}, False, 503)
         return JSONResponse(status_code=503, content={
             "ok": False, "error": "GHOST_FROZEN",
             "detail": "ghost is frozen by emergency stop at "
@@ -137,6 +150,7 @@ def execute_action(req: ExecuteRequest) -> Dict[str, Any]:
     try:
         result = controller.run_action(req.model_dump())
     except controller.ActionError as exc:
+        # 动作日志入账在 controller.run_action 单点完成（含进锁前校验），此处只回包
         content: Dict[str, Any] = {"ok": False, "error": exc.error, "detail": exc.detail}
         content.update(exc.data)
         return JSONResponse(status_code=exc.status, content=content)
@@ -168,4 +182,12 @@ def _record_step(req: ExecuteRequest, result: Dict[str, Any]) -> None:
     step = {"action": action, "hwnd": int(hwnd) if hwnd else None,
             "target": target, "text": req.text,
             "wait_after_ms": int(req.settle_seconds * 1000)}
+    # drag/scroll（v0.6 M1）：原样记录执行轨迹（点位+毫秒节奏）与滚轮参数，
+    # 重放按轨迹复现而不是只记起终点。
+    if action == "drag":
+        step["points"] = result.get("trajectory")
+        step["points_t"] = result.get("trajectory_t")
+    if action == "scroll" and isinstance(result.get("scroll"), dict):
+        step["dy"] = result["scroll"].get("dy")
+        step["smooth"] = bool(result["scroll"].get("smooth"))
     macro_recorder.add_step(step)

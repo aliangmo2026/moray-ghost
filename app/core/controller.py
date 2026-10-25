@@ -12,6 +12,7 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
 from . import backend, screen_mss
+from . import action_log
 from .backend import FailSafeException
 
 LOG = logging.getLogger("moray-ghost.controller")
@@ -19,9 +20,14 @@ LOG = logging.getLogger("moray-ghost.controller")
 ACTION_LOCK = threading.Lock()      # 桌面动作全局串行（进程内锁）
 DRIFT_LIMIT_PX = 3                  # moveTo 后实际落点允许的最大偏差
 CORNER_GUARD_PX = 2                 # 请求坐标距 Fail-Safe 角落点的保护半径
-VALID_ACTIONS = ("click", "double_click", "right_click", "move", "type", "hotkey")
-COORD_ACTIONS = ("click", "double_click", "right_click", "move", "type")
-VALID_ACTIONS_TXT = "click / double_click / right_click / move / type / hotkey"
+MAX_TRAJECTORY_POINTS = 2000        # drag 轨迹点上限（超限等距降采样保端点）
+MAX_SCROLL_DY = 100000              # 单次滚轮幅度上限
+VALID_ACTIONS = ("click", "double_click", "right_click", "move", "type",
+                 "hotkey", "drag", "scroll")
+COORD_ACTIONS = ("click", "double_click", "right_click", "move", "type",
+                 "drag", "scroll")
+VALID_ACTIONS_TXT = ("click / double_click / right_click / move / type / "
+                     "hotkey / drag / scroll")
 
 
 class ActionError(Exception):
@@ -88,6 +94,33 @@ def _parse_hotkey(combo: str) -> List[str]:
 
 
 def run_action(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """安全管道唯一入口（v0.6 起同时是驾驶舱动作日志的入账点）。
+
+    成功 / ActionError（含进锁前校验拒绝）/ 未预期异常三路径都入账——
+    宏重放、任务步骤、直接 /execute_action 全部经过这里，无一遗漏。
+    """
+    action = str(payload.get("action", "")).strip().lower()
+    detail = {"x": payload.get("x"), "y": payload.get("y"),
+              "monitor": payload.get("monitor") or 1}
+    try:
+        result = _run_action_impl(payload)
+    except ActionError as exc:
+        err_data = exc.data or {}
+        action_log.record("native", action, detail, False, exc.status,
+                          thumb=(err_data.get("after_screenshot_path")
+                                 or err_data.get("scene_screenshot_path")))
+        raise
+    except Exception:
+        action_log.record("native", action, detail, False, 500)
+        raise
+    action_log.record("native", action,
+                      {"x": result.get("x"), "y": result.get("y"),
+                       "monitor": result.get("monitor")},
+                      True, 200, thumb=result.get("after_screenshot_path"))
+    return result
+
+
+def _run_action_impl(payload: Dict[str, Any]) -> Dict[str, Any]:
     action = str(payload.get("action", "")).strip().lower()
     if action not in VALID_ACTIONS:
         raise SafetyError(f"unsupported action: {action!r} (valid: {VALID_ACTIONS_TXT})")
@@ -110,7 +143,9 @@ def run_action(payload: Dict[str, Any]) -> Dict[str, Any]:
         raise SafetyError("action 'type' requires non-empty text")
     if action == "hotkey" and not text:
         raise SafetyError("action 'hotkey' requires a combo like ctrl+s")
-    if action in COORD_ACTIONS and (x is None or y is None):
+    if action in COORD_ACTIONS and (x is None or y is None) \
+            and not (action == "drag" and payload.get("points")):
+        # drag 带显式轨迹时 x/y 可省略（起点取 points[0]），其余动作必须给 x/y
         raise SafetyError(f"action {action!r} requires x/y")
 
     mon_count = len(screen_mss.monitors())  # 含 index 0 = 全屏联合区
@@ -122,6 +157,78 @@ def run_action(payload: Dict[str, Any]) -> Dict[str, Any]:
     keys: Optional[List[str]] = None
     if action == "hotkey":
         keys = _parse_hotkey(str(text))
+
+    # drag/scroll 专属解析（v0.6 M1）：轨迹/滚轮在通用坐标校验之后、进锁之前完成
+    trajectory: Optional[List[List[int]]] = None
+    trajectory_t: Optional[List[int]] = None
+    scroll_dy: Optional[int] = None
+    scroll_smooth = False
+    if action == "drag":
+        duration_ms = min(max(int(payload.get("duration_ms") or 600), 100), 10000)
+        raw_points = payload.get("points")
+        if raw_points is not None:
+            if not isinstance(raw_points, list) or len(raw_points) < 2:
+                raise SafetyError("drag points must be a list of >=2 [x,y] entries")
+            pts: List[Tuple[int, int]] = []
+            for p in raw_points:
+                if (not isinstance(p, (list, tuple)) or len(p) < 2
+                        or not isinstance(p[0], (int, float))
+                        or not isinstance(p[1], (int, float))):
+                    raise SafetyError("drag points entries must be [x,y] numbers")
+                pts.append((int(p[0]), int(p[1])))
+            if len(pts) > MAX_TRAJECTORY_POINTS:  # 等距降采样，端点保留
+                keep = MAX_TRAJECTORY_POINTS
+                step = (len(pts) - 1) / (keep - 1)
+                pts = [pts[round(i * step)] for i in range(keep)]
+            trajectory = [[px, py] for px, py in pts]
+            raw_t = payload.get("points_t")
+            if isinstance(raw_t, list) and len(raw_t) == len(trajectory):
+                trajectory_t = [min(max(int(t), 0), 10000) for t in raw_t]
+                if trajectory_t != sorted(trajectory_t):
+                    raise SafetyError("drag points_t must be non-decreasing")
+            else:
+                step_ms = duration_ms / (len(trajectory) - 1)
+                trajectory_t = [int(round(i * step_ms)) for i in range(len(trajectory))]
+            # 轨迹起点为权威：改写 x/y，让下方通用 bounds/换算/回显全部以它为准
+            x, y = trajectory[0][0], trajectory[0][1]
+        else:
+            if x is None or y is None:
+                raise SafetyError("drag requires x/y (or points)")
+            sx, sy = int(x), int(y)
+            x2 = payload.get("x2")
+            y2 = payload.get("y2")
+            if x2 is None or y2 is None:
+                raise SafetyError("drag requires x2/y2 or points")
+            x2i, y2i = int(x2), int(y2)
+            n = max(2, min(duration_ms // 16, 1000))
+            trajectory = [
+                [int(round(sx + (x2i - sx) * i / (n - 1))),
+                 int(round(sy + (y2i - sy) * i / (n - 1)))]
+                for i in range(n)]
+            step_ms = duration_ms / (n - 1)
+            trajectory_t = [int(round(i * step_ms)) for i in range(n)]
+    if action == "scroll":
+        if payload.get("dy") is None:
+            raise SafetyError("scroll requires dy")
+        scroll_dy = int(payload.get("dy"))
+        if scroll_dy == 0 or abs(scroll_dy) > MAX_SCROLL_DY:
+            raise SafetyError(
+                "scroll dy must be a non-zero int within +/-" + str(MAX_SCROLL_DY))
+        scroll_smooth = bool(payload.get("smooth"))
+
+    # 轨迹全点校验：每个轨迹点都必须在屏内且不落在 Fail-Safe 角落
+    if trajectory is not None:
+        for px, py in trajectory:
+            inside = (mon["left"] <= px < mon["left"] + mon["width"]
+                      and mon["top"] <= py < mon["top"] + mon["height"])
+            if not inside:
+                raise SafetyError(
+                    f"trajectory point ({px},{py}) out of bounds for monitor "
+                    + str(monitor), x=px, y=py)
+            if _in_corner((px, py)):
+                raise SafetyError(
+                    f"trajectory point ({px},{py}) fall inside a Fail-Safe corner",
+                    x=px, y=py)
 
     coord_source = "physical"
     resolved_physical: Optional[List[int]] = None
@@ -166,14 +273,22 @@ def run_action(payload: Dict[str, Any]) -> Dict[str, Any]:
     # 输入审计：每一次真实桌面输入在此留一行账（本模块是全仓唯一动鼠标的咽喉，
     # 宏重放/任务/直接动作都汇到这里）；与 logs/access.log 的 HTTP 层记录互相印证，
     # "鼠标为什么动了"从此可事后归因。type 的文本内容不记账（只记坐标）。
-    LOG.info("input_audit action=%s resolved=%s monitor=%s",
-             action, resolved_physical, monitor)
+    audit_extra = ""
+    if action == "drag" and trajectory is not None:
+        audit_extra = " points=" + str(len(trajectory))
+    elif action == "scroll" and scroll_dy is not None:
+        audit_extra = " dy=" + str(scroll_dy) + (" smooth" if scroll_smooth else "")
+    LOG.info("input_audit channel=native action=%s resolved=%s monitor=%s%s",
+             action, resolved_physical, monitor, audit_extra)
 
     with ACTION_LOCK:
-        return _run_locked_action(action, xi, yi, text, keys, monitor, settle,
-                                  fmt, quality, scale, include_before_b64,
-                                  x_req, y_req, coord_source, resolved_physical,
-                                  payload.get("hwnd"))
+        result = _run_locked_action(action, xi, yi, text, keys, monitor, settle,
+                                    fmt, quality, scale, include_before_b64,
+                                    x_req, y_req, coord_source, resolved_physical,
+                                    payload.get("hwnd"),
+                                    trajectory, trajectory_t,
+                                    scroll_dy, scroll_smooth)
+    return result
 
 
 def _run_locked_action(action: str, xi: Optional[int], yi: Optional[int],
@@ -182,7 +297,11 @@ def _run_locked_action(action: str, xi: Optional[int], yi: Optional[int],
                        include_before_b64: bool, x_req: Optional[int],
                        y_req: Optional[int], coord_source: str,
                        resolved_physical: Optional[List[int]],
-                       want_hwnd: Optional[int]) -> Dict[str, Any]:
+                       want_hwnd: Optional[int],
+                       trajectory: Optional[List[List[int]]] = None,
+                       trajectory_t: Optional[List[int]] = None,
+                       scroll_dy: Optional[int] = None,
+                       scroll_smooth: bool = False) -> Dict[str, Any]:
     t0 = time.perf_counter()
     before_path: Optional[str] = None
     after_path: Optional[str] = None
@@ -234,10 +353,11 @@ def _run_locked_action(action: str, xi: Optional[int], yi: Optional[int],
                     x=xi, y=yi, expected=[xi, yi], actual=list(actual),
                     before_screenshot_path=before_path,
                     after_screenshot_path=after_path)
-            # 点击落点归属门禁（v0.4 破防加固）：payload 带 hwnd 的点击系动作，
-            # 落点必须仍属于目标窗口（moveTo 与 click 之间窗口可能被拖走/遮挡）
-            # ——否则拒绝，绝不把点击打进别的窗口。
-            if want_hwnd and action in ("click", "double_click", "right_click"):
+            # 点击/滚轮落点归属门禁：payload 带 hwnd 的点击系与 scroll 动作，
+            # 作用点必须仍属于目标窗口（moveTo 与执行之间窗口可能被拖走/遮挡）
+            # ——否则拒绝，绝不把输入打进别的窗口。
+            if want_hwnd and action in ("click", "double_click", "right_click",
+                                        "scroll"):
                 root = backend.point_root((xi, yi))
                 if root != int(want_hwnd):
                     after_img, _ = screen_mss.grab(monitor)
@@ -260,6 +380,73 @@ def _run_locked_action(action: str, xi: Optional[int], yi: Optional[int],
             backend.write_text(str(text))
         elif action == "hotkey":
             backend.hotkey(*keys)
+        elif action == "drag":
+            # 拖拽（v0.6 M1）：起点已 moveTo+漂移校验；执行前先做终点落点归属
+            # 门禁（带 hwnd 时），执行中逐点 Fail-Safe，finally 强制释放鼠标键。
+            if trajectory is None:
+                raise InternalActionError("drag trajectory missing after validation")
+            if want_hwnd:
+                # 起点+终点双门禁：起点被覆盖时拖拽会落进错误窗口（可能拖动别的
+                # 窗口本体），终点被覆盖同 click 门禁语义——都在 mouse_down 前查。
+                for gate_pt, gate_name in ((trajectory[0], "start"),
+                                           (trajectory[-1], "end")):
+                    root = backend.point_root((gate_pt[0], gate_pt[1]))
+                    if root != int(want_hwnd):
+                        after_img, _ = screen_mss.grab(monitor)
+                        after_path = str(screen_mss.save_audit(after_img, "after", fmt, quality))
+                        raise SafetyError(
+                            f"drag {gate_name} point {tuple(gate_pt)} is covered by "
+                            f"another window (root={root}, expected {int(want_hwnd)})",
+                            x=gate_pt[0], y=gate_pt[1], expected_root=int(want_hwnd),
+                            actual_root=root,
+                            before_screenshot_path=before_path,
+                            after_screenshot_path=after_path)
+            drag_t0 = time.perf_counter()
+            backend.mouse_down("left")
+            try:
+                for i in range(1, len(trajectory)):
+                    px, py = trajectory[i]
+                    if _in_corner((px, py)):
+                        after_img, _ = screen_mss.grab(monitor)
+                        after_path = str(screen_mss.save_audit(after_img, "after", fmt, quality))
+                        raise FailSafeTriggered(
+                            "trajectory point (" + str(px) + "," + str(py)
+                            + ") is inside a Fail-Safe corner mid-drag; released",
+                            before_screenshot_path=before_path,
+                            after_screenshot_path=after_path)
+                    backend.move_to(px, py)
+                    landed = backend.position()
+                    if _in_corner(landed):
+                        after_img, _ = screen_mss.grab(monitor)
+                        after_path = str(screen_mss.save_audit(after_img, "after", fmt, quality))
+                        raise FailSafeTriggered(
+                            "cursor entered a Fail-Safe corner mid-drag at "
+                            + str(list(landed)) + "; released",
+                            before_screenshot_path=before_path,
+                            after_screenshot_path=after_path)
+                    if trajectory_t is not None and i < len(trajectory_t):
+                        ahead = trajectory_t[i] / 1000.0 - (time.perf_counter() - drag_t0)
+                        if ahead > 0:
+                            time.sleep(min(ahead, 0.25))
+            finally:
+                backend.release_pointer_buttons()  # 绝不把"按住"状态泄漏到系统
+        elif action == "scroll":
+            # 滚轮（v0.6 M1）：smooth 时分片滚动；带 hwnd 的归属门禁已在上方复核
+            if scroll_dy is None:
+                raise InternalActionError("scroll dy missing after validation")
+            if scroll_smooth:
+                sign = 1 if scroll_dy > 0 else -1
+                chunks = max(2, min(abs(scroll_dy) // 40, 20))
+                base = abs(scroll_dy) // chunks
+                parts = [sign * base] * chunks
+                parts[-1] += scroll_dy - sign * base * chunks
+            else:
+                parts = [scroll_dy]
+            for i, part in enumerate(parts):
+                if part:
+                    backend.scroll(part)
+                if len(parts) > 1 and i < len(parts) - 1:
+                    time.sleep(0.015)
         # move：moveTo 本身即动作
 
         if settle > 0:
@@ -307,6 +494,11 @@ def _run_locked_action(action: str, xi: Optional[int], yi: Optional[int],
         "elapsed_ms": int((time.perf_counter() - t0) * 1000),
         "after_image_b64": screen_mss.b64_of(after_img, fmt, quality, scale),
     }
+    if action == "drag":
+        body["trajectory"] = trajectory          # 宏录制取这份（执行轨迹）
+        body["trajectory_t"] = trajectory_t      # 毫秒节奏（相对起点）
+    if action == "scroll":
+        body["scroll"] = {"dy": scroll_dy, "smooth": scroll_smooth}
     if include_before_b64 and before_img is not None:
         body["before_image_b64"] = screen_mss.b64_of(before_img, fmt, quality, scale)
     return body
