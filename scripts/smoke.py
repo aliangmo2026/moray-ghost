@@ -59,7 +59,7 @@ def main() -> int:
     ok_all = True
 
     # 1) /health（免 token）
-    r = requests.get("http://127.0.0.1:8030/health", timeout=10)
+    r = requests.get("http://127.0.0.1:8030/api/ghost/health", timeout=10)
     h = r.json()
     ok_all &= check("GET /health -> 200", r.status_code == 200 and h.get("status") == "ok",
                     f"service={h.get('service')} version={h.get('version')} "
@@ -74,7 +74,7 @@ def main() -> int:
                     f"cursor={h.get('cursor')}")
 
     # 2) /screenshot（免 token）
-    r = requests.get("http://127.0.0.1:8030/screenshot",
+    r = requests.get("http://127.0.0.1:8030/api/ghost/screenshot",
                      params={"fmt": "jpeg", "quality": 70, "scale": 0.5, "save": "true"},
                      timeout=20)
     s = r.json()
@@ -87,7 +87,7 @@ def main() -> int:
                     str(spath))
 
     # 3) /execute_action 缺 token -> 401
-    r = requests.post("http://127.0.0.1:8030/execute_action",
+    r = requests.post("http://127.0.0.1:8030/api/ghost/execute_action",
                       json={"action": "click", "x": safe_x, "y": safe_y}, timeout=10)
     detail = r.text[:80]
     try:
@@ -97,14 +97,14 @@ def main() -> int:
     ok_all &= check("POST /execute_action (no token) -> 401", r.status_code == 401, detail)
 
     # 4) 宏系统
-    r = requests.get("http://127.0.0.1:8030/macro", headers=H, timeout=10)
+    r = requests.get("http://127.0.0.1:8030/api/ghost/macro", headers=H, timeout=10)
     ok_all &= check("GET /macro (token) -> 200 列表可用",
                     r.status_code == 200 and isinstance(r.json().get("macros"), list),
                     f"count={r.json().get('count')}")
-    r = requests.post("http://127.0.0.1:8030/macro/whatever/replay",
+    r = requests.post("http://127.0.0.1:8030/api/ghost/macro/whatever/replay",
                       json={"dry_run": True}, timeout=10)
     ok_all &= check("POST /macro/whatever/replay (no token) -> 401", r.status_code == 401)
-    r = requests.post("http://127.0.0.1:8030/macro/whatever/replay", headers=H,
+    r = requests.post("http://127.0.0.1:8030/api/ghost/macro/whatever/replay", headers=H,
                       json={"dry_run": True, "allow_fallback": False, "task_id": None},
                       timeout=10)
     ok_all &= check("POST /macro/whatever/replay (token) -> 404（真实重放：宏不存在）",
@@ -112,7 +112,7 @@ def main() -> int:
 
     # 5) 授权 click（真实动作，落到安全坐标 = 主屏中心）
     if not args.no_click:
-        r = requests.post("http://127.0.0.1:8030/execute_action", headers=H,
+        r = requests.post("http://127.0.0.1:8030/api/ghost/execute_action", headers=H,
                           json={"action": "click", "x": safe_x, "y": safe_y,
                                 "settle_seconds": 0.3, "fmt": "jpeg", "quality": 70,
                                 "scale": 0.5}, timeout=30)
@@ -129,7 +129,7 @@ def main() -> int:
 
     # 5.5) test_scaled_click：源图坐标 → 物理像素换算（缩放图中心点回中心）
     if not args.no_click:
-        r = requests.get("http://127.0.0.1:8030/screenshot", params={"scale": 0.5}, timeout=20)
+        r = requests.get("http://127.0.0.1:8030/api/ghost/screenshot", params={"scale": 0.5}, timeout=20)
         s = r.json()
         ow = s.get("original_width")
         oh = s.get("original_height")
@@ -138,7 +138,7 @@ def main() -> int:
         ok_all &= check("test_scaled_click: original size matches monitor",
                         r.status_code == 200 and ow == exp_w and oh == exp_h,
                         f"original={ow}x{oh} scaled={s.get('width')}x{s.get('height')} expect={exp_w}x{exp_h}")
-        r = requests.post("http://127.0.0.1:8030/execute_action", headers=H,
+        r = requests.post("http://127.0.0.1:8030/api/ghost/execute_action", headers=H,
                           json={"action": "click", "x": 640, "y": 400,
                                 "source_width": 1280, "source_height": 800,
                                 "settle_seconds": 0.1}, timeout=30)
@@ -155,7 +155,7 @@ def main() -> int:
                      and abs(ca[0] - rp[0]) <= 3 and abs(ca[1] - rp[1]) <= 3)
         ok_all &= check("test_scaled_click: cursor_after within 3px of resolved",
                         cursor_ok, f"cursor_after={ca}")
-        r = requests.post("http://127.0.0.1:8030/execute_action", headers=H,
+        r = requests.post("http://127.0.0.1:8030/api/ghost/execute_action", headers=H,
                           json={"action": "click", "x": 640, "y": 400,
                                 "settle_seconds": 0.1}, timeout=30)
         b = r.json()
@@ -179,7 +179,7 @@ def main() -> int:
             if pos.x > 2 or pos.y > 2:
                 print(f"  (attempt {attempt}: mouse left corner at {pos}, retrying)", flush=True)
                 continue
-            r = requests.post("http://127.0.0.1:8030/execute_action", headers=H,
+            r = requests.post("http://127.0.0.1:8030/api/ghost/execute_action", headers=H,
                               json={"action": "click", "x": safe_x, "y": safe_y}, timeout=30)
             b = r.json()
             if r.status_code == 409:

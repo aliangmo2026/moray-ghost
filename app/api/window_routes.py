@@ -8,7 +8,7 @@ from fastapi import APIRouter
 
 from app.core import window_locator
 
-router = APIRouter()
+router = APIRouter(prefix="/api/ghost")
 
 
 @router.get("/window/list")

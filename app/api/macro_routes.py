@@ -18,15 +18,17 @@ from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from app.core import environment, macro_matcher, macro_recorder, macro_runner
 from app.core import macro_store, screen_mss
 
-router = APIRouter()
+router = APIRouter(prefix="/api/ghost")
 
 
 class ReplayBody(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
     dry_run: bool = False
     allow_fallback: bool = False
     task_id: Optional[str] = None
@@ -36,6 +38,8 @@ class ReplayBody(BaseModel):
 
 
 class VisionPayload(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
     found: bool = True
     center: Optional[List[int]] = Field(default=None,
                                         description="全屏物理像素（Iris 认定的按钮新位置）")
@@ -44,6 +48,8 @@ class VisionPayload(BaseModel):
 
 
 class HealBody(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
     task_id: Optional[str] = None
     step_id: int = Field(..., ge=1)
     reason: Optional[str] = None
@@ -53,16 +59,22 @@ class HealBody(BaseModel):
 
 
 class RecordStartBody(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
     task_id: str = Field(..., min_length=1)
 
 
 class RecordStopBody(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
     task_id: str = Field(..., min_length=1)
     name: Optional[str] = None
     app_signature: Optional[str] = None
 
 
 class ProbeBody(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
     screenshot_crop: str = Field(..., description="模板小图（base64 PNG，物理像素裁剪）")
     match_threshold: float = Field(default=0.80, ge=0.0, le=1.0)
     monitor: int = Field(default=1, ge=1)

@@ -54,7 +54,7 @@ def check(name: str, ok: bool, detail: str = "") -> bool:
 def edge_execute(payload: dict, hwnd: int):
     p = dict(payload)
     p["hwnd"] = hwnd
-    r = requests.post("http://127.0.0.1:8030/execute_action", headers=H,
+    r = requests.post("http://127.0.0.1:8030/api/ghost/execute_action", headers=H,
                       json=p, timeout=60)
     try:
         body = r.json()
@@ -152,7 +152,7 @@ def main() -> int:
     if abs_pt is None:
         print("[FAIL] 所有候选锚点纹理不足（std<12），拒绝录制", flush=True)
         return 1
-    rs = requests.post("http://127.0.0.1:8030/macro/record/start", headers=H,
+    rs = requests.post("http://127.0.0.1:8030/api/ghost/macro/record/start", headers=H,
                        json={"task_id": "t_r2"}, timeout=15)
     r, body = None, None
     for attempt in range(4):
@@ -168,7 +168,7 @@ def main() -> int:
         break
     ok_all = check("R2-1: 录制 click 搜索框 → 200", r.status_code == 200,
                    str(body)[:100])
-    r = requests.post("http://127.0.0.1:8030/macro/record/stop", headers=H,
+    r = requests.post("http://127.0.0.1:8030/api/ghost/macro/record/stop", headers=H,
                       json={"task_id": "t_r2", "name": "test_r2_edge_"
                                                           + str(int(time.time()))},
                       timeout=15)
@@ -249,7 +249,7 @@ def main() -> int:
 
 def replay(macro_id: str, hwnd: int):
     return requests.post(
-        f"http://127.0.0.1:8030/macro/{macro_id}/replay", headers=H,
+        f"http://127.0.0.1:8030/api/ghost/macro/{macro_id}/replay", headers=H,
         json={"hwnd": hwnd}, timeout=60)
 
 

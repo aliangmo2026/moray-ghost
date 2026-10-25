@@ -52,7 +52,7 @@ def check(name: str, ok: bool, detail: str = "") -> bool:
 
 
 def action(payload: dict):
-    r = requests.post("http://127.0.0.1:8030/execute_action", headers=H,
+    r = requests.post("http://127.0.0.1:8030/api/ghost/execute_action", headers=H,
                       json=payload, timeout=60)
     try:
         body = r.json()
@@ -101,7 +101,7 @@ def main() -> int:
         return 1
     # 激活：点击窗口中心（编辑区）
     rect = wl.get_rect(hwnd1)
-    r = requests.post("http://127.0.0.1:8030/execute_action", headers=H,
+    r = requests.post("http://127.0.0.1:8030/api/ghost/execute_action", headers=H,
                       json={"action": "click", "x": rect[0] + 400,
                             "y": rect[1] + 300, "hwnd": hwnd1,
                             "settle_seconds": 0.1}, timeout=30)
@@ -136,13 +136,13 @@ def main() -> int:
         {"kind": "wait", "ms": 2000},
         {"kind": "require_vision", "prompt": "报告窗口与文本的最终状态"},
     ]
-    r = requests.post("http://127.0.0.1:8030/task", headers=H,
+    r = requests.post("http://127.0.0.1:8030/api/ghost/task", headers=H,
                       json={"task_id": "task_r1_" + str(int(time.time())),
                             "goal": "混乱环境对抗", "steps": steps}, timeout=30)
     print(f"(POST /task) {r.status_code} {r.json()}", flush=True)
     t_start = time.time()
     tid = r.json().get("task_id")
-    r = requests.post(f"http://127.0.0.1:8030/task/{tid}/start", headers=H,
+    r = requests.post(f"http://127.0.0.1:8030/api/ghost/task/{tid}/start", headers=H,
                       timeout=30)
     print(f"(start) {r.status_code} {r.json()}", flush=True)
 
@@ -152,7 +152,7 @@ def main() -> int:
     final = None
     while time.time() - t_start < 120:
         r = requests.get(
-            f"http://127.0.0.1:8030/task/{tid}", headers=H, timeout=15)
+            f"http://127.0.0.1:8030/api/ghost/task/{tid}", headers=H, timeout=15)
         try:
             cur = r.json()
         except Exception:  # noqa: BLE001

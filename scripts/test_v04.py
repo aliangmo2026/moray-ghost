@@ -56,7 +56,7 @@ def check(name: str, ok: bool, detail: str = "") -> bool:
 
 
 def action(payload: dict):
-    r = requests.post("http://127.0.0.1:8030/execute_action", headers=H,
+    r = requests.post("http://127.0.0.1:8030/api/ghost/execute_action", headers=H,
                       json=payload, timeout=60)
     try:
         body = r.json()
@@ -71,13 +71,13 @@ def action(payload: dict):
 
 def replay(macro_id: str, payload: dict):
     return requests.post(
-        f"http://127.0.0.1:8030/macro/{macro_id}/replay", headers=H,
+        f"http://127.0.0.1:8030/api/ghost/macro/{macro_id}/replay", headers=H,
         json=payload, timeout=120)
 
 
 def heal(macro_id: str, payload: dict):
     return requests.post(
-        f"http://127.0.0.1:8030/macro/{macro_id}/heal", headers=H,
+        f"http://127.0.0.1:8030/api/ghost/macro/{macro_id}/heal", headers=H,
         json=payload, timeout=60)
 
 
@@ -178,9 +178,9 @@ def main() -> int:
     hwnds_snapshot = {w["hwnd"] for w in wl.list_windows()}
 
     # ---------- M2：/environment 解锁态准确性 ----------
-    r = requests.get("http://127.0.0.1:8030/environment", timeout=15)
+    r = requests.get("http://127.0.0.1:8030/api/ghost/environment", timeout=15)
     ok_all &= check("M2-1a: GET /environment 无 token → 401", r.status_code == 401)
-    r = requests.get("http://127.0.0.1:8030/environment", headers=H, timeout=30)
+    r = requests.get("http://127.0.0.1:8030/api/ghost/environment", headers=H, timeout=30)
     env = r.json()
     print(f"  /environment: {env}", flush=True)
     ok_all &= check("M2-1b: 解锁态准确性（readable/Default/无锁屏/无UAC/允许输入）",
@@ -223,7 +223,7 @@ def main() -> int:
     ok_all &= check("M4-2b: 激活+前台门禁",
                     activate_via_click(hwnd1)
                     and win32gui.GetForegroundWindow() == hwnd1)
-    rs = requests.post("http://127.0.0.1:8030/macro/record/start", headers=H,
+    rs = requests.post("http://127.0.0.1:8030/api/ghost/macro/record/start", headers=H,
                        json={"task_id": "t_v04"}, timeout=15)
     rect1 = wl.get_rect(hwnd1)
     btn1 = [rect1[0] + 60, rect1[1] + 86]
@@ -231,7 +231,7 @@ def main() -> int:
                 "hwnd": hwnd1, "settle_seconds": 0.4})
     ok_all &= check("M4-2c: 录制 click 文件按钮", r.status_code == 200,
                     f"resolved={r.json().get('resolved_physical')}")
-    r = requests.post("http://127.0.0.1:8030/macro/record/stop", headers=H,
+    r = requests.post("http://127.0.0.1:8030/api/ghost/macro/record/stop", headers=H,
                       json={"task_id": "t_v04",
                             "name": "test_macro_v04_" + str(int(time.time()))},
                       timeout=15)
@@ -261,7 +261,7 @@ def main() -> int:
                     r.status_code == 200 and hb.get("version") == 2
                     and hb.get("healed") is True, str(hb)[:140])
     r = requests.get(
-        f"http://127.0.0.1:8030/macro/{macro_id}", headers=H, timeout=15)
+        f"http://127.0.0.1:8030/api/ghost/macro/{macro_id}", headers=H, timeout=15)
     mrow = r.json().get("macro", {})
     new_center = (mrow.get("steps") or [{}])[0].get("target", {}).get("recorded_center")
     ok_all &= check("M4-3c: steps_json 已更新（recorded_center=新中心）",
@@ -333,7 +333,7 @@ def main() -> int:
                     r.status_code == 200 and hb2.get("version") == 3, str(hb2)[:140])
     # M4-4b: DB 替换生效（确定性断言：image_b64 == 主仓所传新锚点）
     r = requests.get(
-        f"http://127.0.0.1:8030/macro/{macro_id}", headers=H, timeout=15)
+        f"http://127.0.0.1:8030/api/ghost/macro/{macro_id}", headers=H, timeout=15)
     steps_now = r.json().get("macro", {}).get("steps", [])
     ok_all &= check("M4-4b: steps_json 的 image_b64 已替换为主仓所传新锚点",
                     bool(steps_now)

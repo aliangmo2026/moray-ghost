@@ -7,7 +7,7 @@ from fastapi import APIRouter
 
 from app.core import environment
 
-router = APIRouter()
+router = APIRouter(prefix="/api/ghost")
 
 
 @router.get("/environment")

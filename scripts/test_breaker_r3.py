@@ -86,7 +86,7 @@ def main() -> int:
                                            "y": center[1] + i * 8, "hwnd": hwnd,
                                            "settle_seconds": 0.1}},
         ]
-        r = requests.post("http://127.0.0.1:8030/task", headers=H,
+        r = requests.post("http://127.0.0.1:8030/api/ghost/task", headers=H,
                           json={"task_id": tid, "goal": f"并发测试 {i}",
                                 "steps": steps}, timeout=30)
         ok_all &= check(f"R3-{i}a: POST /task {tid} → 201", r.status_code == 201,
@@ -96,7 +96,7 @@ def main() -> int:
     t0 = time.time()
     for tid in TASK_IDS:
         r = requests.post(
-            f"http://127.0.0.1:8030/task/{tid}/start", headers=H, timeout=30)
+            f"http://127.0.0.1:8030/api/ghost/task/{tid}/start", headers=H, timeout=30)
         ok_all &= check(f"R3-{tid}: start → 202", r.status_code == 202,
                         str(r.json())[:80])
 
@@ -111,7 +111,7 @@ def main() -> int:
             if tid in finals:
                 continue
             r = requests.get(
-                f"http://127.0.0.1:8030/task/{tid}", headers=H, timeout=15)
+                f"http://127.0.0.1:8030/api/ghost/task/{tid}", headers=H, timeout=15)
             try:
                 cur = r.json()
             except Exception:  # noqa: BLE001
@@ -188,7 +188,7 @@ def main() -> int:
 
     # ---------- 清场 ----------
     for tid in TASK_IDS:
-        requests.post(f"http://127.0.0.1:8030/task/{tid}/cancel", headers=H,
+        requests.post(f"http://127.0.0.1:8030/api/ghost/task/{tid}/cancel", headers=H,
                       timeout=10)  # 终态任务返回 409，忽略
     close = wl.get_rect(hwnd) is not None
     if close:

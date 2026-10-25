@@ -55,18 +55,18 @@ def check(name: str, ok: bool, detail: str = "") -> bool:
 
 
 def action(payload: dict):
-    return requests.post("http://127.0.0.1:8030/execute_action", headers=H,
+    return requests.post("http://127.0.0.1:8030/api/ghost/execute_action", headers=H,
                          json=payload, timeout=60)
 
 
 def task_post(path: str, payload: dict):
     return requests.post(
-        f"http://127.0.0.1:8030/task{path}", headers=H, json=payload, timeout=30)
+        f"http://127.0.0.1:8030/api/ghost/task{path}", headers=H, json=payload, timeout=30)
 
 
 def task_get(task_id: str):
     return requests.get(
-        f"http://127.0.0.1:8030/task/{task_id}", headers=H, timeout=15)
+        f"http://127.0.0.1:8030/api/ghost/task/{task_id}", headers=H, timeout=15)
 
 
 def poll_status(task_id: str, want: set, timeout: float = 40.0):
@@ -184,14 +184,14 @@ def main() -> int:
     ok_all &= check("P-2: 激活+前台门禁",
                     activate_via_click(hwnd1)
                     and win32gui.GetForegroundWindow() == hwnd1)
-    rs = requests.post("http://127.0.0.1:8030/macro/record/start", headers=H,
+    rs = requests.post("http://127.0.0.1:8030/api/ghost/macro/record/start", headers=H,
                        json={"task_id": "t_m3"}, timeout=15)
     rect1 = wl.get_rect(hwnd1)
     btn1 = [rect1[0] + 60, rect1[1] + 86]
     r = action({"action": "click", "x": btn1[0], "y": btn1[1],
                 "hwnd": hwnd1, "settle_seconds": 0.3})
     ok_all &= check("P-3: 录制 click 文件按钮", r.status_code == 200)
-    r = requests.post("http://127.0.0.1:8030/macro/record/stop", headers=H,
+    r = requests.post("http://127.0.0.1:8030/api/ghost/macro/record/stop", headers=H,
                       json={"task_id": "t_m3", "name": "test_task_m3_"
                                                           + str(int(time.time()))},
                       timeout=15)

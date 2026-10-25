@@ -42,7 +42,7 @@ def check(name: str, ok: bool, detail: str = "") -> bool:
 
 
 def action(payload: dict):
-    r = requests.post("http://127.0.0.1:8030/execute_action", headers=H,
+    r = requests.post("http://127.0.0.1:8030/api/ghost/execute_action", headers=H,
                       json=payload, timeout=60)
     try:
         body = r.json()

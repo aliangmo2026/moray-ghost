@@ -59,11 +59,13 @@ app = FastAPI(title="moray-ghost", version=config.VERSION, lifespan=lifespan)
 _OPEN_PATHS = {"/health", "/screenshot", "/docs", "/redoc", "/openapi.json", "/favicon.ico"}
 
 
+_GHOST_PREFIX = "/api/ghost"
+_OPEN_PATHS = {_GHOST_PREFIX + "/health", _GHOST_PREFIX + "/screenshot"}
+
+
 def _is_protected(path: str) -> bool:
-    """执行动作类接口强校验；/health 与 /screenshot 探活放行。"""
-    return ((path == "/execute_action" or path.startswith("/macro")
-             or path.startswith("/window") or path.startswith("/environment")
-             or path.startswith("/task")) and path not in _OPEN_PATHS)
+    """ghost 全部接口走 /api/ghost 前缀；仅 health 与 screenshot 探活放行。"""
+    return path.startswith(_GHOST_PREFIX + "/") and path not in _OPEN_PATHS
 
 
 @app.middleware("http")

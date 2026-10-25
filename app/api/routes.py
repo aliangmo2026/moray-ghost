@@ -12,7 +12,7 @@ from typing import Any, Dict, Optional, Union
 from fastapi import APIRouter, Query
 from fastapi.responses import JSONResponse
 from PIL import Image
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from app.core import backend, controller, macro_matcher, macro_recorder
 from app.core import environment, screen_mss, window_locator
@@ -20,7 +20,7 @@ from app.core.config import DB_PATH, JPEG_QUALITY, SERVICE, VERSION
 
 LOG = logging.getLogger("moray-ghost.routes")
 
-router = APIRouter()
+router = APIRouter(prefix="/api/ghost")
 
 
 @router.get("/health")
@@ -99,6 +99,8 @@ def screenshot(
 
 
 class ExecuteRequest(BaseModel):
+    model_config = ConfigDict(extra="allow")  # 主仓多传的字段直接忽略，绝不 422
+
     action: str = Field(..., description="click|double_click|right_click|move|type|hotkey")
     x: Optional[int] = None
     y: Optional[int] = None

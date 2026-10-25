@@ -9,16 +9,18 @@ from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from app.core import environment
 from app.core import task_runner
 from app.core.task_runner import TaskError
 
-router = APIRouter()
+router = APIRouter(prefix="/api/ghost")
 
 
 class TaskCreateBody(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
     task_id: Optional[str] = Field(default=None, min_length=1)
     goal: Optional[str] = None
     steps: List[Dict[str, Any]]

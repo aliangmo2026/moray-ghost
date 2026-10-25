@@ -1,8 +1,13 @@
 # moray-ghost
 
-Windows 桌面自动化本地服务（v0.2）：**mss 极速截图 + 授权式 pyautogui 动作 + 宏系统骨架**。
+Windows 桌面自动化本地服务（v0.4.1）：**mss 极速截图 + 授权式 pyautogui 动作 + 宏录制/安全重放 + 任务生命周期 + 环境感知 + 视觉反哺 Heal**。
 
 只监听 `127.0.0.1:8030`；绝不触碰 `D:\MoRay`（主仓）。
+
+> **⚠️ v0.4.1 起全部接口统一挂载在 `/api/ghost/` 前缀下**（如 `/api/ghost/health`、
+> `/api/ghost/execute_action`），主仓可在同一端口挂载自己的服务而互不冲突。
+> 主仓对接请读 **[docs/Ghost主仓接入指南.md](docs/Ghost主仓接入指南.md)**，
+> 对接链路可用 `scripts/mock_moray.py` 一键验证。
 
 ## ⚠️ 测试纪律红线（所有脚本强制执行，违反即事故）
 

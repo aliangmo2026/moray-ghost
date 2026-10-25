@@ -55,29 +55,29 @@ def check(name: str, ok: bool, detail: str = "") -> bool:
 
 
 def action(payload: dict):
-    return requests.post("http://127.0.0.1:8030/execute_action", headers=H,
+    return requests.post("http://127.0.0.1:8030/api/ghost/execute_action", headers=H,
                          json=payload, timeout=60)
 
 
 def record_start(payload: dict):
-    return requests.post("http://127.0.0.1:8030/macro/record/start", headers=H,
+    return requests.post("http://127.0.0.1:8030/api/ghost/macro/record/start", headers=H,
                          json=payload, timeout=30)
 
 
 def record_stop(payload: dict):
-    return requests.post("http://127.0.0.1:8030/macro/record/stop", headers=H,
+    return requests.post("http://127.0.0.1:8030/api/ghost/macro/record/stop", headers=H,
                          json=payload, timeout=30)
 
 
 def replay(macro_id: str, payload: dict):
     return requests.post(
-        f"http://127.0.0.1:8030/macro/{macro_id}/replay", headers=H,
+        f"http://127.0.0.1:8030/api/ghost/macro/{macro_id}/replay", headers=H,
         json=payload, timeout=120)
 
 
 def get_macro(macro_id: str):
     return requests.get(
-        f"http://127.0.0.1:8030/macro/{macro_id}", headers=H, timeout=15)
+        f"http://127.0.0.1:8030/api/ghost/macro/{macro_id}", headers=H, timeout=15)
 
 
 def jbody(r):
