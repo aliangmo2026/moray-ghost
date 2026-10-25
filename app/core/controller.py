@@ -44,6 +44,11 @@ class FailSafeTriggered(ActionError):
     error = "FAIL_SAFE_TRIGGERED"
 
 
+class ForegroundError(ActionError):
+    status = 409
+    error = "WINDOW_NOT_FOREGROUND"
+
+
 class InternalActionError(ActionError):
     status = 500
     error = "INTERNAL_ERROR"
@@ -196,6 +201,20 @@ def _run_locked_action(action: str, xi: Optional[int], yi: Optional[int],
         before_path = str(screen_mss.save_audit(before_img, "before", fmt, quality))
         cursor_before = list(backend.position())
 
+        # type/hotkey 前台门禁（v0.4.1）：带 hwnd 提示时，打字目标必须是前台
+        # 窗口——绝不把文本打进别的应用（与 runner 的宏 type 门禁对齐）。
+        if action in ("type", "hotkey") and want_hwnd:
+            fg = backend.foreground_hwnd()
+            if fg != int(want_hwnd):
+                after_img, _ = screen_mss.grab(monitor)
+                after_path = str(screen_mss.save_audit(after_img, "after", fmt, quality))
+                raise ForegroundError(
+                    f"target hwnd {int(want_hwnd)} is not foreground (fg={fg}); "
+                    f"typing aborted",
+                    expected_hwnd=int(want_hwnd), foreground=fg,
+                    before_screenshot_path=before_path,
+                    after_screenshot_path=after_path)
+
         # 移动 + 漂移校验（type 前也必须把光标移到 (x,y) 并校验）
         if xi is not None and yi is not None:
             backend.move_to(xi, yi)
@@ -248,7 +267,9 @@ def _run_locked_action(action: str, xi: Optional[int], yi: Optional[int],
             "pyautogui Fail-Safe triggered; whole action aborted",
             scene_screenshot_path=scene_path, scene_image_b64=scene_b64,
             before_screenshot_path=before_path, after_screenshot_path=after_path)
-    except SafetyError:
+    except ActionError:
+        # SafetyError / ForegroundError / BadSourceSizeError 原样上抛——
+        # 语义化错误绝不能被兜底处理器吞掉转成 INTERNAL_ERROR
         raise
     except Exception as exc:
         try:

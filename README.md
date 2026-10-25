@@ -179,10 +179,14 @@ scripts/smoke.py            冒烟：health / screenshot / 401 / click / failsaf
 run.py  start.ps1  .env.example  requirements.txt
 ```
 
-## 已知限制（v0.2）
+## 已知限制（v0.4.1）
 
-- `type` 走 `pyautogui.write`，仅支持 ASCII 文本；中文输入需要剪贴板/UNICODE
-  注入方案（列入 v0.3）。
+- `type` 的中文/emoji 支持：backend 检测到非 ASCII 文本时自动走**剪贴板粘贴**
+  （pyperclip 备份 → 写入 → Ctrl+V → 还原/清空剪贴板；图片剪贴板无法经 pyperclip
+  还原）。粘贴要求目标应用接受 Ctrl+V（记事本/常规编辑器验证通过；部分终端需
+  Shift+Ins，未支持）。ASCII 文本仍走 pyautogui.write 逐键输入。
+- `execute_action` 的 type/hotkey 带 `hwnd` 提示时执行**前台门禁**：目标窗口不在
+  前台 → 409 `WINDOW_NOT_FOREGROUND`（与宏重放门禁对齐，绝不把文本打进别的应用）。
 - 主屏（primary）判定采用虚拟屏 (0,0) 原点启发式（mss 不提供主屏标记）。
 - `coordinates`/`screenshot` 返回的 `width/height` 为缩放后最终图像尺寸；
   审计落盘文件始终是全分辨率。

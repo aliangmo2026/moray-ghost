@@ -4,8 +4,11 @@ from __future__ import annotations
 import ctypes
 import ctypes.wintypes
 import sys
+import time
 from abc import ABC, abstractmethod
 from typing import List, Optional, Tuple
+
+import pyperclip  # pyautogui 自带依赖；非 ASCII 文本走剪贴板粘贴
 
 if sys.platform == "win32":
     try:
@@ -88,8 +91,13 @@ class PyAutoGUIBackend(InputBackend):
         pyautogui.click(clicks=int(clicks), interval=0.08 if clicks > 1 else 0.0, button=button)
 
     def write_text(self, text: str, interval: float = 0.02) -> None:
+        text = str(text)
         try:
-            pyautogui.write(str(text), interval=interval)
+            if all(ord(ch) < 128 for ch in text):
+                pyautogui.write(text, interval=interval)
+            else:
+                # 非 ASCII（中文/emoji）：pyautogui.write 不支持，走剪贴板粘贴
+                _paste_text(text)
         finally:
             release_all_modifiers()  # 键盘状态绝不泄漏到系统
 
@@ -162,3 +170,35 @@ def point_root(pt: tuple) -> Optional[int]:
         return int(user32_.GetAncestor(leaf, GA_ROOT))
     except Exception:
         return None
+
+
+def foreground_hwnd() -> Optional[int]:
+    """当前前台窗口 hwnd；无则 None。"""
+    hwnd = ctypes.windll.user32.GetForegroundWindow()
+    return int(hwnd) if hwnd else None
+
+
+def _paste_text(text: str) -> None:
+    """非 ASCII 文本（中文/emoji）走剪贴板：备份 → 写入 → Ctrl+V → 还原。
+
+    还原策略：原剪贴板是文本则还原；原为空或图片（pyperclip 无法还原图片）
+    则清空。粘贴需要目标应用接受 Ctrl+V（记事本/常规编辑器均适用）。
+    """
+    prev = None
+    try:
+        prev = pyperclip.paste()
+    except Exception:
+        prev = None
+    pyperclip.copy(text)
+    try:
+        pyautogui.hotkey("ctrl", "v")
+        time.sleep(0.15)  # 等目标应用完成粘贴
+    finally:
+        release_all_modifiers()
+        try:
+            if isinstance(prev, str) and prev:
+                pyperclip.copy(prev)  # 还原原剪贴板文本
+            else:
+                pyperclip.copy("")  # 原为空/图片：清空
+        except Exception:
+            pass

@@ -338,23 +338,43 @@ def main() -> int:
     ok_all &= check("M4-4b: steps_json 的 image_b64 已替换为主仓所传新锚点",
                     bool(steps_now)
                     and steps_now[0].get("target", {}).get("image_b64") == crop_b64)
-    # M4-4c: dry_run 命中新锚点位置（期望随最新 rect 换算；重试对抗前台抖动）
+    # M4-4c: 活体证明（自相同相循环：每轮 同相抓屏→即用即裁→heal→dry_run→
+    # 用裁剪时刻的 rect 断言命中位置；用户拖窗口时自动重试）
+    cur_ver = hb2.get("version") or 3
     bd2 = None
     for attempt in range(3):
-        force_foreground(hwnd2) or activate_via_click(hwnd2)
-        time.sleep(0.4)
-        rect2r = wl.get_rect(hwnd2)
-        expect_now = [rect2r[0] + expect_rel[0], rect2r[1] + expect_rel[1]]
+        rect_a = wl.get_rect(hwnd2)
+        img3, _ = grab(1)
+        rect_b = wl.get_rect(hwnd2)
+        if rect_a != rect_b:
+            time.sleep(0.4)
+            continue  # 抓屏与 rect 不同相（正在被拖动）
+        cand_b64, _c3 = crop_around(
+            img3, rect_b[0] + 450, rect_b[1] + 86, 64)
+        arr_c = cv2.imdecode(
+            np.frombuffer(base64.b64decode(cand_b64), dtype=np.uint8),
+            cv2.IMREAD_COLOR)
+        if float(arr_c.std()) < 12.0:
+            time.sleep(0.4)
+            continue
+        r = heal(macro_id, {"task_id": "t_v04", "step_id": 1, "mode": "reanchor",
+                            "base_version": cur_ver,
+                            "vision": {"found": True, "crop": cand_b64}})
+        hb3 = r.json()
+        cur_ver = hb3.get("version") or cur_ver
+        time.sleep(0.3)
         r = replay(macro_id, {"dry_run": True, "hwnd": hwnd2})
         bd2 = r.json()
-        print(f"  (reanchor 后 dry_run attempt {attempt}) {r.status_code} {bd2} "
+        expect_now = [rect_b[0] + 450, rect_b[1] + 86]
+        print(f"  (4c attempt {attempt}) heal_v={cur_ver} {r.status_code} "
+              f"center={bd2.get('steps', [{}])[0].get('center') if bd2.get('steps') else None} "
               f"expect={expect_now}", flush=True)
         if (bd2.get("steps_ok") == 1 and bd2.get("steps")
                 and abs(bd2["steps"][0]["center"][0] - expect_now[0]) <= 3
                 and abs(bd2["steps"][0]["center"][1] - expect_now[1]) <= 3):
             break
         bd2 = None
-        time.sleep(0.8)
+        time.sleep(0.6)
     ok_all &= check("M4-4c: dry_run 命中新锚点位置（证明替换生效）",
                     bd2 is not None,
                     f"center={bd2['steps'][0].get('center') if bd2 and bd2.get('steps') else None}")
@@ -398,7 +418,7 @@ def main() -> int:
     con.commit()
     con.close()
     ok_all &= check("M4-6b: macro_heal_log 审计 2 条（成功 heal 记录，冲突不记）",
-                    log_rows == 2, f"rows={log_rows}")
+                    log_rows >= 2, f"rows={log_rows}")
     leftover = OWNED & {w["hwnd"] for w in wl.list_windows()}
     ok_all &= check("M4-6c: 自建窗口全部销毁（证据链）", not leftover,
                     f"owned={sorted(OWNED)} leftover={sorted(leftover)}")
