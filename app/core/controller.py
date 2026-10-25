@@ -161,7 +161,8 @@ def run_action(payload: Dict[str, Any]) -> Dict[str, Any]:
     with ACTION_LOCK:
         return _run_locked_action(action, xi, yi, text, keys, monitor, settle,
                                   fmt, quality, scale, include_before_b64,
-                                  x_req, y_req, coord_source, resolved_physical)
+                                  x_req, y_req, coord_source, resolved_physical,
+                                  payload.get("hwnd"))
 
 
 def _run_locked_action(action: str, xi: Optional[int], yi: Optional[int],
@@ -169,7 +170,8 @@ def _run_locked_action(action: str, xi: Optional[int], yi: Optional[int],
                        settle: float, fmt: str, quality: int, scale: float,
                        include_before_b64: bool, x_req: Optional[int],
                        y_req: Optional[int], coord_source: str,
-                       resolved_physical: Optional[List[int]]) -> Dict[str, Any]:
+                       resolved_physical: Optional[List[int]],
+                       want_hwnd: Optional[int]) -> Dict[str, Any]:
     t0 = time.perf_counter()
     before_path: Optional[str] = None
     after_path: Optional[str] = None
@@ -207,6 +209,20 @@ def _run_locked_action(action: str, xi: Optional[int], yi: Optional[int],
                     x=xi, y=yi, expected=[xi, yi], actual=list(actual),
                     before_screenshot_path=before_path,
                     after_screenshot_path=after_path)
+            # 点击落点归属门禁（v0.4 破防加固）：payload 带 hwnd 的点击系动作，
+            # 落点必须仍属于目标窗口（moveTo 与 click 之间窗口可能被拖走/遮挡）
+            # ——否则拒绝，绝不把点击打进别的窗口。
+            if want_hwnd and action in ("click", "double_click", "right_click"):
+                root = backend.point_root((xi, yi))
+                if root != int(want_hwnd):
+                    after_img, _ = screen_mss.grab(monitor)
+                    after_path = str(screen_mss.save_audit(after_img, "after", fmt, quality))
+                    raise SafetyError(
+                        f"click point ({xi},{yi}) is covered by another window "
+                        f"(root={root}, expected {int(want_hwnd)})",
+                        x=xi, y=yi, expected_root=int(want_hwnd), actual_root=root,
+                        before_screenshot_path=before_path,
+                        after_screenshot_path=after_path)
 
         # 执行（FailSafeException 会从 pyautogui 冒出并中止整个动作）
         if action == "click":

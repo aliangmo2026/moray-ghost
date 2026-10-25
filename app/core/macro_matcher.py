@@ -27,6 +27,11 @@ from PIL import Image
 
 from . import window_locator
 
+# 锚点纹理下限：std 低于此值的模板视为不可靠（近平坦模板在 TM_CCOEFF_NORMED 下
+# 数值不稳定，实测会给出满分伪匹配且命中位置随噪声漂移 → 点击落点不可预测）。
+# 真实 UI 锚点（按钮/文字/图标）std 普遍 ≥ 25。
+TEXTURE_MIN = 12.0
+
 
 def _decode_png_b64(b64: str) -> np.ndarray:
     raw = base64.b64decode(b64)
@@ -40,13 +45,15 @@ def _decode_png_b64(b64: str) -> np.ndarray:
 def decode_anchor(crop_b64: str):
     """解码并校验 heal 传入的锚点图（公开助手）。
 
-    非法 base64/PNG 或零方差（纯色）模板抛 ValueError——退化模板不能当宏锚点。
+    非法 base64/PNG、零方差或低纹理（std < TEXTURE_MIN）抛 ValueError——
+    这类模板会造成命中位置随噪声漂移的危险点击。
     返回 (np数组, std)。
     """
     tpl = _decode_png_b64(crop_b64)
     std = float(np.std(tpl))
-    if std < 1e-6:
-        raise ValueError("flat template (std=0) cannot be a macro anchor")
+    if std < TEXTURE_MIN:
+        raise ValueError("template texture too low (std=" + format(std, ".1f")
+                         + " < " + str(TEXTURE_MIN) + "); cannot be a macro anchor")
     return tpl, std
 
 
@@ -98,12 +105,16 @@ def find(img: Image.Image, crop_b64: str, threshold: float = 0.80,
     t0 = time.perf_counter()
     tpl = _decode_png_b64(crop_b64)
     th, tw = tpl.shape[:2]
-    # 退化模板防线：零方差（纯色/纯平）模板在 TM_CCOEFF_NORMED 下数学上无定义，
-    # 实测会返回 ≥0.8 的伪高分（等于说"屏幕上到处都是"）。特征缺失的模板永远
-    # 不该作为宏锚点，直接判 not_found。
-    if float(np.std(tpl)) < 1e-6:
+    # 退化/低纹理防线：std=0 在 TM_CCOEFF_NORMED 下数学上无定义（伪满分），
+    # 低纹理（std < TEXTURE_MIN）命中位置随噪声漂移（实测"score=1.0 瞎点"）。
+    # 两类模板都直接判 not_found——宁可降级也不盲点。
+    std_t = float(np.std(tpl))
+    if std_t < TEXTURE_MIN:
         return {"status": "not_found", "best_score": 0.0,
-                "reason": "flat template", "roi_used": None,
+                "reason": ("flat template" if std_t < 1e-6
+                           else "low texture template (std="
+                                + format(std_t, ".1f") + ")"),
+                "roi_used": None,
                 "find_ms": int((time.perf_counter() - t0) * 1000)}
 
     used_roi: Optional[List[int]] = None

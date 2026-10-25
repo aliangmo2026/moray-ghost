@@ -2,9 +2,10 @@
 from __future__ import annotations
 
 import ctypes
+import ctypes.wintypes
 import sys
 from abc import ABC, abstractmethod
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 
 if sys.platform == "win32":
     try:
@@ -146,3 +147,18 @@ def pressed_modifiers() -> List[str]:
         if user32.GetAsyncKeyState(vk) & 0x8000:
             out.append(name)
     return sorted(set(out))
+
+
+GA_ROOT = 2
+
+
+def point_root(pt: tuple) -> Optional[int]:
+    """屏幕上 pt 像素处的最顶层窗口根句柄（点击落点归属）；失败返回 None。"""
+    try:
+        user32_ = ctypes.windll.user32
+        leaf = user32_.WindowFromPoint(ctypes.wintypes.POINT(int(pt[0]), int(pt[1])))
+        if not leaf:
+            return None
+        return int(user32_.GetAncestor(leaf, GA_ROOT))
+    except Exception:
+        return None
