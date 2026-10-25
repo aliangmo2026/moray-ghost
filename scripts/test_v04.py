@@ -46,6 +46,7 @@ for line in (ROOT / ".env").read_text(encoding="utf-8").splitlines():
 H = {"X-Ghost-Token": token}
 RESULTS: list = []
 OWNED: set = set()
+TMP_FILES: list = []
 
 
 def check(name: str, ok: bool, detail: str = "") -> bool:
@@ -102,13 +103,28 @@ def force_foreground(hwnd: int) -> bool:
 
 
 def open_notepad(owned_before: set, x: int, y: int, w: int = 800, h: int = 600) -> int:
-    subprocess.Popen(["notepad.exe"])
+    """v0.5 加固：带空临时文件启动（绕过 Win11 会话恢复，绝不载入用户文档）；
+    hwnd 差集 + 唯一文件名双绑定——环境再活跃也不可能绑到用户窗口。"""
+    tmp_dir = ROOT / "data" / "tmp"
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+    tmp_file = tmp_dir / ("moray_t_" + str(int(time.time() * 1000)) + ".txt")
+    tmp_file.write_text("", encoding="utf-8")
+    TMP_FILES.append(tmp_file)
+    # 新记事本会把"带文件参数"的启动并进既有窗口的标签页（实测）：启动前必须
+    # 无任何记事本窗口
+    existing = [it for it in wl.list_windows()
+                if "记事本" in it["title"] or "notepad" in it["title"].lower()]
+    if existing:
+        print("  (open_notepad: 已有记事本窗口未关闭，拒绝启动以免并入标签页)",
+              flush=True)
+        return 0
+    subprocess.Popen(["notepad.exe", str(tmp_file)])
     hwnd = None
     for _ in range(60):
         time.sleep(0.25)
         new = [it for it in wl.list_windows()
                if it["hwnd"] not in owned_before
-               and ("记事本" in it["title"] or "notepad" in it["title"].lower())]
+               and tmp_file.stem in it["title"]]
         if new:
             hwnd = new[0]["hwnd"]
             break
@@ -121,6 +137,14 @@ def open_notepad(owned_before: set, x: int, y: int, w: int = 800, h: int = 600) 
                           win32con.SWP_NOMOVE | win32con.SWP_NOSIZE)
     time.sleep(0.4)
     return hwnd
+
+
+def cleanup_tmp_files() -> None:
+    for f in TMP_FILES:
+        try:
+            f.unlink(missing_ok=True)
+        except Exception:  # noqa: BLE001
+            pass
 
 
 def activate_via_click(hwnd: int, retries: int = 5) -> bool:
@@ -244,6 +268,12 @@ def main() -> int:
 
     hwnd2 = open_notepad(set(hwnds_snapshot) | OWNED, 900, 500)
     ok_all &= check("M4-3a: 自建记事本#2 已定位（新位置 900,500）", hwnd2 in OWNED,
+                    f"hwnd2={hwnd2}")
+    # v0.5 加固：heal/dry_run 前必须把 #2 激活到前台——桌面存在全屏持续刷新的
+    # 用户窗口（ZCode）时，仅 TOPMOST 不足以保证可见性，锚点会裁到别的窗口像素
+    # （0.0 分实测根因）；与 test_macro 2b 的既证模式对齐。
+    ok_all &= check("M4-3pre: #2 前台激活（防 z-order 翻转裁错锚点）",
+                    force_foreground(hwnd2) or activate_via_click(hwnd2),
                     f"hwnd2={hwnd2}")
     def fresh_button() -> list:
         """使用瞬间重取 rect（用户可能拖窗口），按钮相对偏移固定 (60,86)。"""
@@ -420,6 +450,7 @@ def main() -> int:
     ok_all &= check("M4-6b: macro_heal_log 审计 2 条（成功 heal 记录，冲突不记）",
                     log_rows >= 2, f"rows={log_rows}")
     leftover = OWNED & {w["hwnd"] for w in wl.list_windows()}
+    cleanup_tmp_files()
     ok_all &= check("M4-6c: 自建窗口全部销毁（证据链）", not leftover,
                     f"owned={sorted(OWNED)} leftover={sorted(leftover)}")
 

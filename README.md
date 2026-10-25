@@ -1,6 +1,6 @@
 # moray-ghost
 
-Windows 桌面自动化本地服务（v0.4.1）：**mss 极速截图 + 授权式 pyautogui 动作 + 宏录制/安全重放 + 任务生命周期 + 环境感知 + 视觉反哺 Heal**。
+Windows 桌面自动化本地服务（v0.5.0）：**mss 极速截图 + 授权式 pyautogui 动作 + 宏录制/安全重放 + 任务生命周期 + 环境感知 + 视觉反哺 Heal + 多 Agent 任务队列 + Web 监控面板 + 官方 Python SDK**。
 
 只监听 `127.0.0.1:8030`；绝不触碰 `D:\MoRay`（主仓）。
 
@@ -8,6 +8,10 @@ Windows 桌面自动化本地服务（v0.4.1）：**mss 极速截图 + 授权式
 > `/api/ghost/execute_action`），主仓可在同一端口挂载自己的服务而互不冲突。
 > 主仓对接请读 **[docs/Ghost主仓接入指南.md](docs/Ghost主仓接入指南.md)**，
 > 对接链路可用 `scripts/mock_moray.py` 一键验证。
+>
+> **v0.5 平台化**：Ghost 升级为"所有 Agent 通用的桌面操控底座"——
+> 任务级 FIFO 队列 + `X-Agent-Id` 状态隔离 + emergency stop 冻结 + `/dashboard`
+> 监控面板 + `sdk/` 官方 Python 客户端（其他 Agent 零门槛接入，见 [sdk/README.md](sdk/README.md)）。
 
 ## ⚠️ 测试纪律红线（所有脚本强制执行，违反即事故）
 
@@ -22,6 +26,36 @@ Windows 桌面自动化本地服务（v0.4.1）：**mss 极速截图 + 授权式
 4. **关闭验证只认"自己开的 hwnd 已消失"**，不得以"桌面上没有 XX 窗口了"作为通过依据。
 5. **证据链**：测试输出必须打印自己创建的 hwnd 及其销毁结果；不得引用/展示用户窗口内容。
 
+## 架构总览（v0.5.0）
+
+```
+主仓 / 任意 Agent（Iris 视觉 + 任务规划）
+   │
+   │  sdk.GhostClient（sdk/，仅依赖 requests，拷走即用）
+   │    client.task.run() / action.click() / macro.heal() / system.emergency_stop()
+   │    请求头：X-Ghost-Token（鉴权） + X-Agent-Id（队列归属）
+   ▼
+HTTP 层   FastAPI @ 127.0.0.1:8030，全部接口挂 /api/ghost/ 前缀
+   │      token 中间件 · 冻结门禁（GHOST_FROZEN） · 环境门禁（锁屏/UAC → 503 SYSTEM_NOT_READABLE）
+   ▼
+任务队列  app/core/task_queue.py（v0.5）
+   │      FIFO 单调度线程串行派发：created → queued → running → done | degraded | canceled
+   │      X-Agent-Id 状态隔离（跨 Agent → 403 AGENT_FORBIDDEN） · queue_position 排位
+   │      emergency stop：清空队列 + 冻结（/dashboard 同款大按钮）
+   ▼
+任务执行器  app/core/task_runner.py
+   │      步骤：action / macro / wait / require_vision
+   │      任一步失败 → degraded 挂起（fail 快照 + 现场截图，等主仓处置）→ resume 从失败步重排队
+   ▼
+统一安全管道  app/core/controller.py
+   │      全局动作串行锁 · 坐标防线（越界/Fail-Safe 角点/漂移>3px） · Fail-Safe 常开 · 前后审计截图
+   ▼
+执行后端  backend.py（pyautogui 输入） · screen_mss.py（mss 单线程抓屏） · window_locator.py（win32）
+
+观测面：GET /dashboard（任务轮播 + 实时抓图 + EMERGENCY STOP）    GET /api/ghost/dashboard/state
+反哺面：POST /api/ghost/macro/{id}/heal（主仓 Iris 视觉回填锚点，乐观锁 version）
+```
+
 ## 安全模型
 
 - **token 鉴权**：所有执行动作接口（`/execute_action`、`/macro/*`）强校验请求头
@@ -32,6 +66,12 @@ Windows 桌面自动化本地服务（v0.4.1）：**mss 极速截图 + 授权式
 - **审计无盲点**：任何动作执行前、后各拍一张全分辨率截图落盘
   （`data/screenshots/`），并随响应返回路径。
 - **全局串行**：桌面动作持进程内锁串行执行（宏重放 v0.3 也必须走同一管道）。
+- **任务队列（v0.5）**：任务（`/task/*`）经单调度线程按 FIFO 串行上桌面，状态机
+  `created → queued → running → done|degraded|canceled`；直接调 `/execute_action`
+  的零散动作仍走底层锁。
+- **紧急冻结（v0.5）**：`POST /api/ghost/emergency_stop` 清空队列 + 冻结，
+  冻结期 start/resume/execute_action/宏重放一律 503 `GHOST_FROZEN`；
+  `POST /api/ghost/emergency_stop/release` 解冻。
 - **坐标防线**：越界 / 落入 Fail-Safe 角落（保护半径 2px）/ moveTo 后漂移 >3px
   一律 400 `SAFETY_BLOCKED`。
 - **DPI 感知**：Windows 下在 `import mss` / `import pyautogui` 之前调用
@@ -167,12 +207,61 @@ rect 为物理像素 `[l,t,r,b]`（GetWindowRect 原值，不收敛到屏幕边�
 时启用 HMAC Intent Token（`intent.<payload_b64>.<sig_b64>`，nonce 落
 `used_nonces` 防重放）。
 
+## 多 Agent 任务队列（v0.5）
+
+请求头 `X-Agent-Id` 标识调用方（缺省 = 本机运维方，向后兼容旧脚本）：
+
+- **FIFO 串行**：`POST /task/{id}/start`、`/resume` 进入全局队列，单调度线程按
+  入队顺序派发；一个任务上桌面时其他任务排队等待。`GET /task/{id}` 返回
+  `queue_position`（1-based 排位，非排队态为 null）与 `agent_id`。
+- **状态隔离**：任务创建时记录归属。带【不同】agent id 访问他人任务 →
+  403 `AGENT_FORBIDDEN`；不带请求头 = 运维方全量可见。
+- **任务列表**：`GET /tasks?limit=50`——带 agent id 只见自己的任务，不带 = 全量。
+- **冻结联动**：冻结期 start/resume → 503 `GHOST_FROZEN`；排队任务被
+  emergency stop 清出时落 `canceled` + `fail_class=EMERGENCY_STOP`；
+  running 任务在步骤边界安全点停止（绝不切断进行中的输入）。
+
+## Web 监控面板（v0.5）
+
+浏览器打开 `http://127.0.0.1:8030/dashboard`（单文件 HTML，无构建/无外部依赖）：
+
+- **任务状态轮播**：running + queued 任务每 2 秒轮换展示（agent/task/状态/排位/步号）；
+- **实时屏幕抓图**：每 5 秒拉一次 `/api/ghost/screenshot`（免 token，与探活同级）
+  并标注抓取时刻与耗时；
+- **EMERGENCY STOP**：巨型红色按钮，点击（需在面板填 token，存 localStorage）
+  立刻清空任务队列并冻结 Ghost；冻结横幅 + 一键解冻。
+- 数据源 `GET /api/ghost/dashboard/state`（免 token 只读快照）：frozen / queue_depth /
+  running / queued。
+
+## 官方 Python SDK（v0.5）
+
+`sdk/` 目录，依赖仅 `requests`，其他 Agent 拷走即用（完整文档 [sdk/README.md](sdk/README.md)）：
+
+```python
+from sdk import GhostClient
+
+client = GhostClient(agent_id="my-agent")     # token: 参数 > $GHOST_TOKEN > ./.env
+client.environment.check()
+client.action.click(1280, 720)
+view = client.task.run(steps=[{"kind": "wait", "ms": 500}])   # 建+启+自动轮询
+```
+
+异常体系：`GhostError` 基类 → `GhostAuthError`(401) / `GhostForbiddenError`(403) /
+`GhostFrozenError`(503) / `SystemNotReadableError`(503) / `TaskDegradedError`（带
+`.task` 快照，处置后 `resume()` + `wait()`）/ `TaskTimeoutError` / `GhostConnectionError`。
+
+根目录 `sdk_example.py` 是可跑通的全链路演示（体检/截图/单步动作/任务/degraded 处置）。
+
 ## 目录结构
 
 ```
-app/main.py                 入口 + token 中间件 + lifespan
+app/main.py                 入口 + token 中间件 + lifespan + 调度线程装配
 app/api/routes.py           /health /screenshot /execute_action
+app/api/task_routes.py      /task/* + /tasks + /emergency_stop（v0.5）
+app/api/dashboard_routes.py /dashboard 页面 + /dashboard/state（v0.5）
 app/api/macro_routes.py     /macro/*（501 占位 + 只读列表/详情）
+app/core/task_queue.py      任务 FIFO 调度器 + Agent 队列 + 冻结状态机（v0.5）
+app/core/task_runner.py     任务状态机（created→queued→running→…）
 app/core/config.py          .env、常量、DB 路径
 app/core/screen_mss.py      thread-local mss + DPI + 编码
 app/core/backend.py         InputBackend 抽象 + PyAutoGUIBackend
@@ -180,11 +269,14 @@ app/core/controller.py      统一安全管道（锁 + Fail-Safe + 前后截图�
 app/core/auth.py            token 校验（静态 + HMAC Intent Token 可开关）
 app/core/macro_store.py     SQLite 读写 + schema 初始化
 app/core/macro_runner.py    重放骨架（v0.3 落地）
+sdk/                        官方 Python SDK（GhostClient，仅依赖 requests）
+sdk_example.py              SDK 全链路演示
+scripts/test_v050_platform.py  v0.5 验收：队列/隔离/冻结/面板/SDK（零 GUI 靶子）
 scripts/smoke.py            冒烟：health / screenshot / 401 / click / failsafe / macro
 run.py  start.ps1  .env.example  requirements.txt
 ```
 
-## 已知限制（v0.4.1）
+## 已知限制（v0.5.0）
 
 - `type` 的中文/emoji 支持：backend 检测到非 ASCII 文本时自动走**剪贴板粘贴**
   （pyperclip 备份 → 写入 → Ctrl+V → 还原/清空剪贴板；图片剪贴板无法经 pyperclip

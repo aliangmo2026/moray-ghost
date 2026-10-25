@@ -44,6 +44,7 @@ for line in (ROOT / ".env").read_text(encoding="utf-8").splitlines():
 H = {"X-Ghost-Token": token}
 RESULTS: list = []
 OWNED: set = set()          # 本脚本创建并负责销毁的 hwnd
+TMP_FILES: list = []
 DX, DY, TW_B, TH_B = (12, 62, 96, 48)  # Win11 新记事本"文件"按钮相对窗口偏移
 
 
@@ -168,14 +169,28 @@ def force_foreground(hwnd: int) -> bool:
 
 
 def open_notepad(owned_before: set, x: int, y: int, w: int = 800, h: int = 600) -> int:
-    """纪律要求的新开窗口：Popen → hwnd 差集绑定 → 移到指定位置 → 等稳定。"""
-    subprocess.Popen(["notepad.exe"])
+    """纪律要求的新开窗口（v0.5 加固）：带空临时文件启动（绕过 Win11 会话恢复，
+    绝不载入用户文档）→ hwnd 差集 + 唯一文件名双绑定 → 移到指定位置 → 等稳定。"""
+    tmp_dir = ROOT / "data" / "tmp"
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+    tmp_file = tmp_dir / ("moray_t_" + str(int(time.time() * 1000)) + ".txt")
+    tmp_file.write_text("", encoding="utf-8")
+    TMP_FILES.append(tmp_file)
+    # 新记事本会把"带文件参数"的启动并进既有窗口的标签页（实测）：启动前必须
+    # 无任何记事本窗口；本套脚本顺序使用记事本，发现残留即拒绝并明示
+    existing = [it for it in wl.list_windows()
+                if "记事本" in it["title"] or "notepad" in it["title"].lower()]
+    if existing:
+        print("  (open_notepad: 已有记事本窗口未关闭，拒绝启动以免并入标签页)",
+              flush=True)
+        return 0
+    subprocess.Popen(["notepad.exe", str(tmp_file)])
     hwnd = None
     for _ in range(60):
         time.sleep(0.25)
         new = [it for it in wl.list_windows()
                if it["hwnd"] not in owned_before
-               and ("记事本" in it["title"] or "notepad" in it["title"].lower())]
+               and tmp_file.stem in it["title"]]
         if new:
             hwnd = new[0]["hwnd"]
             break
@@ -190,6 +205,58 @@ def open_notepad(owned_before: set, x: int, y: int, w: int = 800, h: int = 600) 
                           win32con.SWP_NOMOVE | win32con.SWP_NOSIZE)
     time.sleep(0.4)
     return hwnd
+
+
+def cleanup_tmp_files() -> None:
+    for f in TMP_FILES:
+        try:
+            f.unlink(missing_ok=True)
+        except Exception:  # noqa: BLE001
+            pass
+
+
+_OVERLAY_EX_NOACTIVATE = 0x08000000
+_OVERLAY_GWL_EXSTYLE = -20
+
+
+def open_overlay(x: int, y: int, w: int, h: int, color: str = "#3a3a3a") -> dict:
+    """遮挡层（v0.5 加固）：本进程 tkinter 窗口，置顶 + WS_EX_NOACTIVATE——
+    纯视觉遮挡、绝不抢焦点。取代记事本遮挡窗（绕开新记事本标签页合并与会话
+    恢复两个风险面）。返回 {"tk": root, "hwnd": int}。"""
+    import ctypes
+    import tkinter as tk
+
+    root = tk.Tk()
+    root.overrideredirect(True)
+    root.geometry(f"{w}x{h}+{x}+{y}")
+    tk.Frame(root, background=color).pack(fill="both", expand=True)
+    root.attributes("-topmost", True)
+    root.update_idletasks()
+    hwnd = ctypes.windll.user32.GetParent(root.winfo_id())
+    ex = ctypes.windll.user32.GetWindowLongW(hwnd, _OVERLAY_GWL_EXSTYLE)
+    ctypes.windll.user32.SetWindowLongW(
+        hwnd, _OVERLAY_GWL_EXSTYLE, ex | _OVERLAY_EX_NOACTIVATE)
+    root.update()
+    return {"tk": root, "hwnd": int(hwnd)}
+
+
+def close_overlay(ov: dict) -> bool:
+    try:
+        ov["tk"].destroy()
+        return True
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def raise_overlay(ov: dict) -> None:
+    """重新把遮挡层抬到最上层：force_foreground(目标) 的最小化→还原会把目标
+    抬到 topmost 带顶端（实测 0.99 干净命中=遮挡失效），必须在激活之后重抬。"""
+    try:
+        ov["tk"].attributes("-topmost", True)
+        ov["tk"].lift()
+        ov["tk"].update()
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def close_owned(hwnd: int) -> bool:
@@ -380,12 +447,12 @@ def main() -> int:
     hwnd3 = open_notepad(set(hwnds_snapshot) | OWNED, 200, 200)
     ok_all &= check("4a: 自建记事本#3 已定位", hwnd3 in OWNED, f"hwnd3={hwnd3}")
     force_foreground(hwnd3) or activate_via_click(hwnd3)
-    hwnd4 = open_notepad(set(hwnds_snapshot) | OWNED, 230, 240, 500, 400)
-    ok_all &= check("4b: 自建遮挡窗#4 已定位", hwnd4 in OWNED, f"hwnd4={hwnd4}")
+    ov4 = open_overlay(230, 240, 500, 400)
+    hwnd4 = ov4["hwnd"]
+    ok_all &= check("4b: 自建遮挡层#4 已就位（tkinter 覆盖层，绝不抢焦点）",
+                    bool(hwnd4), f"hwnd4={hwnd4}")
     force_foreground(hwnd3)
-    win32gui.SetWindowPos(hwnd4, win32con.HWND_TOPMOST, 0, 0, 0, 0,
-                          win32con.SWP_NOMOVE | win32con.SWP_NOSIZE
-                          | win32con.SWP_NOACTIVATE)
+    raise_overlay(ov4)  # 激活会把 #3 抬到覆盖层之上，必须重抬（0.99 命中教训）
     time.sleep(0.4)
     print(f"  (遮挡编排) fg={win32gui.GetForegroundWindow()} (期望 hwnd3={hwnd3})",
           flush=True)
@@ -414,8 +481,9 @@ def main() -> int:
 
     # ---------- 清场（只关自己的 hwnd，逐个验证） ----------
     ok_all &= check("5a: 关闭记事本#3", close_owned(hwnd3), f"hwnd3={hwnd3}")
-    ok_all &= check("5b: 关闭遮挡窗#4", close_owned(hwnd4), f"hwnd4={hwnd4}")
+    ok_all &= check("5b: 遮挡层#4 已销毁", close_overlay(ov4), f"hwnd4={hwnd4}")
     leftover = OWNED & {w["hwnd"] for w in wl.list_windows()}
+    cleanup_tmp_files()
     ok_all &= check("5c: 自建窗口全部销毁（证据链）", not leftover,
                     f"owned={sorted(OWNED)} leftover={sorted(leftover)}")
 

@@ -45,6 +45,7 @@ for line in (ROOT / ".env").read_text(encoding="utf-8").splitlines():
 H = {"X-Ghost-Token": token}
 RESULTS: list = []
 OWNED: set = set()
+TMP_FILES: list = []
 
 
 def check(name: str, ok: bool, detail: str = "") -> bool:
@@ -106,13 +107,28 @@ def force_foreground(hwnd: int) -> bool:
 
 
 def open_notepad(owned_before: set, x: int, y: int, w: int = 800, h: int = 600) -> int:
-    subprocess.Popen(["notepad.exe"])
+    """v0.5 加固：带空临时文件启动（绕过 Win11 会话恢复，绝不载入用户文档）；
+    hwnd 差集 + 唯一文件名双绑定——环境再活跃也不可能绑到用户窗口。"""
+    tmp_dir = ROOT / "data" / "tmp"
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+    tmp_file = tmp_dir / ("moray_t_" + str(int(time.time() * 1000)) + ".txt")
+    tmp_file.write_text("", encoding="utf-8")
+    TMP_FILES.append(tmp_file)
+    # 新记事本会把"带文件参数"的启动并进既有窗口的标签页（实测）：启动前必须
+    # 无任何记事本窗口；本套脚本顺序使用记事本，发现残留即拒绝并明示
+    existing = [it for it in wl.list_windows()
+                if "记事本" in it["title"] or "notepad" in it["title"].lower()]
+    if existing:
+        print("  (open_notepad: 已有记事本窗口未关闭，拒绝启动以免并入标签页)",
+              flush=True)
+        return 0
+    subprocess.Popen(["notepad.exe", str(tmp_file)])
     hwnd = None
     for _ in range(60):
         time.sleep(0.25)
         new = [it for it in wl.list_windows()
                if it["hwnd"] not in owned_before
-               and ("记事本" in it["title"] or "notepad" in it["title"].lower())]
+               and tmp_file.stem in it["title"]]
         if new:
             hwnd = new[0]["hwnd"]
             break
@@ -125,6 +141,58 @@ def open_notepad(owned_before: set, x: int, y: int, w: int = 800, h: int = 600) 
                           win32con.SWP_NOMOVE | win32con.SWP_NOSIZE)
     time.sleep(0.4)
     return hwnd
+
+
+def cleanup_tmp_files() -> None:
+    for f in TMP_FILES:
+        try:
+            f.unlink(missing_ok=True)
+        except Exception:  # noqa: BLE001
+            pass
+
+
+_OVERLAY_EX_NOACTIVATE = 0x08000000
+_OVERLAY_GWL_EXSTYLE = -20
+
+
+def open_overlay(x: int, y: int, w: int, h: int, color: str = "#3a3a3a") -> dict:
+    """遮挡层（v0.5 加固）：本进程 tkinter 窗口，置顶 + WS_EX_NOACTIVATE——
+    纯视觉遮挡、绝不抢焦点。取代记事本遮挡窗（绕开新记事本标签页合并与会话
+    恢复两个风险面）。返回 {"tk": root, "hwnd": int}。"""
+    import ctypes
+    import tkinter as tk
+
+    root = tk.Tk()
+    root.overrideredirect(True)
+    root.geometry(f"{w}x{h}+{x}+{y}")
+    tk.Frame(root, background=color).pack(fill="both", expand=True)
+    root.attributes("-topmost", True)
+    root.update_idletasks()
+    hwnd = ctypes.windll.user32.GetParent(root.winfo_id())
+    ex = ctypes.windll.user32.GetWindowLongW(hwnd, _OVERLAY_GWL_EXSTYLE)
+    ctypes.windll.user32.SetWindowLongW(
+        hwnd, _OVERLAY_GWL_EXSTYLE, ex | _OVERLAY_EX_NOACTIVATE)
+    root.update()
+    return {"tk": root, "hwnd": int(hwnd)}
+
+
+def close_overlay(ov: dict) -> bool:
+    try:
+        ov["tk"].destroy()
+        return True
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def raise_overlay(ov: dict) -> None:
+    """重新把遮挡层抬到最上层：force_foreground(目标) 的最小化→还原会把目标
+    抬到 topmost 带顶端（实测 0.99 干净命中=遮挡失效），必须在激活之后重抬。"""
+    try:
+        ov["tk"].attributes("-topmost", True)
+        ov["tk"].lift()
+        ov["tk"].update()
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def activate_via_click(hwnd: int) -> bool:
@@ -256,12 +324,12 @@ def main() -> int:
     ]})
     ok_all &= check("B-1: POST /task B → 201", r.status_code == 201)
 
-    hwnd4 = open_notepad(set(hwnds_snapshot) | OWNED, 930, 540, 500, 400)
-    ok_all &= check("B-2: 自建遮挡窗#4 已定位", hwnd4 in OWNED, f"hwnd4={hwnd4}")
+    ov4 = open_overlay(930, 540, 500, 400)
+    hwnd4 = ov4["hwnd"]
+    ok_all &= check("B-2: 自建遮挡层#4 已就位（tkinter 覆盖层，绝不抢焦点）",
+                    bool(hwnd4), f"hwnd4={hwnd4}")
     force_foreground(hwnd2)  # 前台留给 #2（typing 去向），遮挡只做视觉
-    win32gui.SetWindowPos(hwnd4, win32con.HWND_TOPMOST, 0, 0, 0, 0,
-                          win32con.SWP_NOMOVE | win32con.SWP_NOSIZE
-                          | win32con.SWP_NOACTIVATE)
+    raise_overlay(ov4)  # 激活会把 #2 抬到覆盖层之上，必须重抬
     time.sleep(0.4)
 
     r = task_post("/task_m3_b/start", {})
@@ -273,9 +341,8 @@ def main() -> int:
                     ("WINDOW_OCCLUDED", "MACRO_NOT_FOUND")
                     and (tb.get("fail") or {}).get("step_id") == 2,
                     f"fail={tb.get('fail')}")
-    win32gui.PostMessage(hwnd4, win32con.WM_CLOSE, 0, 0)  # 撤遮挡
-    time.sleep(0.8)
-    ok_all &= check("B-5: 遮挡窗#4 已关闭", close_owned(hwnd4), f"hwnd4={hwnd4}")
+    ok_all &= check("B-5: 遮挡层#4 已销毁", close_overlay(ov4), f"hwnd4={hwnd4}")
+    time.sleep(0.8)  # 撤遮挡后等桌面合成稳定
     force_foreground(hwnd2) or activate_via_click(hwnd2)
 
     r = task_post("/task_m3_b/resume", {})
@@ -331,6 +398,7 @@ def main() -> int:
     con.execute("DELETE FROM macros WHERE name LIKE ?", ("test_task_m3%",))
     con.commit()
     con.close()
+    cleanup_tmp_files()
     leftover = OWNED & {w["hwnd"] for w in wl.list_windows()}
     ok_all &= check("E-1: 自建窗口全部销毁（证据链）", not leftover,
                     f"owned={sorted(OWNED)} leftover={sorted(leftover)}")

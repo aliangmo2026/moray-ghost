@@ -21,7 +21,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.core import environment, macro_matcher, macro_recorder, macro_runner
-from app.core import macro_store, screen_mss
+from app.core import macro_store, screen_mss, task_queue
 
 router = APIRouter(prefix="/api/ghost")
 
@@ -186,6 +186,12 @@ def replay(macro_id: str, body: ReplayBody):
       交主仓重新识图；绝不自行用 recorded_center 兜底。
     - 503 CAPTURE_FAILED：抓屏失败（已重试），主仓应重试本宏。
     """
+    # 冻结门禁（v0.5）：emergency stop 期间禁止真实重放（dry_run 只读，放行）
+    if not body.dry_run and task_queue.is_frozen():
+        return JSONResponse(status_code=503, content={
+            "ok": False, "error": "GHOST_FROZEN",
+            "detail": "ghost is frozen by emergency stop at "
+                      + str(task_queue.frozen_at())})
     try:
         return macro_runner.replay(macro_id, dry_run=body.dry_run,
                                    allow_fallback=body.allow_fallback,

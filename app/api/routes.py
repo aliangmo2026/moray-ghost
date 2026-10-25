@@ -15,7 +15,7 @@ from PIL import Image
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.core import backend, controller, macro_matcher, macro_recorder
-from app.core import environment, screen_mss, window_locator
+from app.core import environment, screen_mss, task_queue, window_locator
 from app.core.config import DB_PATH, JPEG_QUALITY, SERVICE, VERSION
 
 LOG = logging.getLogger("moray-ghost.routes")
@@ -121,6 +121,12 @@ class ExecuteRequest(BaseModel):
 
 @router.post("/execute_action")
 def execute_action(req: ExecuteRequest) -> Dict[str, Any]:
+    # 冻结门禁（v0.5）：emergency stop 期间拒绝一切桌面输入
+    if task_queue.is_frozen():
+        return JSONResponse(status_code=503, content={
+            "ok": False, "error": "GHOST_FROZEN",
+            "detail": "ghost is frozen by emergency stop at "
+                      + str(task_queue.frozen_at())})
     # 环境门禁（v0.4 M2）：锁屏 / 安全桌面 / 桌面不可读时拒绝盲操作
     try:
         environment.assert_input_allowed()

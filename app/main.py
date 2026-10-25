@@ -15,8 +15,8 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
 from app.core import screen_mss  # 先于其他 app 模块：尽早设置 DPI
-from app.core import auth, backend, config, macro_store
-from app.api import environment_routes, macro_routes, routes, task_routes, window_routes
+from app.core import auth, backend, config, macro_store, task_queue
+from app.api import dashboard_routes, environment_routes, macro_routes, routes, task_routes, window_routes
 
 config.ensure_dirs()
 config.ensure_token()
@@ -45,12 +45,14 @@ LOG = _setup_logging()
 async def lifespan(_: FastAPI):
     macro_store.init_db()
     backend.release_all_modifiers()  # 启动时清一次可能残留的修饰键（进程曾中途被杀等）
+    task_queue.start_dispatcher()    # v0.5：任务 FIFO 单工作线程（串行派发）
     LOG.info("moray-ghost v%s listening on http://%s:%s (dpi_aware=%s)",
              config.VERSION, config.HOST, config.PORT, screen_mss.DPI_AWARE)
     LOG.info("fail_safe_enabled=true token_required=true intent_token=%s",
              config.INTENT_TOKEN_ENABLED)
     LOG.info("db=%s screenshots=%s", config.DB_PATH, config.SCREENSHOT_DIR)
     yield
+    task_queue.stop_dispatcher()
     LOG.info("moray-ghost stopped")
 
 
@@ -60,7 +62,9 @@ _OPEN_PATHS = {"/health", "/screenshot", "/docs", "/redoc", "/openapi.json", "/f
 
 
 _GHOST_PREFIX = "/api/ghost"
-_OPEN_PATHS = {_GHOST_PREFIX + "/health", _GHOST_PREFIX + "/screenshot"}
+# 探活/监控放行：health、screenshot（v0.2 起）与 dashboard 只读状态（v0.5）
+_OPEN_PATHS = {_GHOST_PREFIX + "/health", _GHOST_PREFIX + "/screenshot",
+               _GHOST_PREFIX + "/dashboard/state"}
 
 
 def _is_protected(path: str) -> bool:
@@ -85,3 +89,5 @@ app.include_router(macro_routes.router)
 app.include_router(window_routes.router)
 app.include_router(environment_routes.router)
 app.include_router(task_routes.router)
+app.include_router(dashboard_routes.router)
+app.include_router(dashboard_routes.api_router)
