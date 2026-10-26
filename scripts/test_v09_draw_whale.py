@@ -71,14 +71,10 @@ def spawn(args: list, drain: bool = False) -> subprocess.Popen:
         errors="replace")
     PROCS.append(proc)
     if drain:
-        log = open(r"E:\moray-ghost\logs\whale_service.log", "w",
-                   encoding="utf-8")
-
         def _drain():
             try:
-                for line in proc.stdout:
-                    log.write(line)
-                    log.flush()
+                for _ in proc.stdout:
+                    pass
             except Exception:  # noqa: BLE001
                 pass
         threading.Thread(target=_drain, daemon=True).start()
