@@ -10,6 +10,8 @@
     client.environment.check()                         # 桌面可读/锁屏/UAC 体检
     shot = client.action.screenshot(scale=0.5)         # 抓屏（附 image_bytes）
     client.action.click(1280, 720)                     # 点击（全量安全管道在服务端）
+    client.draw.trajectory([[100, 100], [200, 160], [300, 100]],
+                           color="blue")               # 平滑轨迹绘制（v0.9.1）
     view = client.task.run(steps=[{"kind": "wait", "ms": 500}])   # 建+启+轮询一步到位
 
 多 Agent：构造时传 ``agent_id``（或环境变量 ``GHOST_AGENT_ID``），请求自动携带
@@ -194,6 +196,49 @@ class ActionAPI(_Namespace):
         return out
 
 
+class DrawAPI(_Namespace):
+    """v0.9.1 通用绘制：平滑 + 降采样 + 画板取色 + 真实鼠标轨迹。
+
+    服务端复合动作（/draw_trajectory）：Chaikin 平滑 + ≤2000 点等距降采样，
+    落笔走 drag 的全套安全管道（起点+终点归属门禁 / 逐点 Fail-Safe /
+    硬超时 / 前后审计截图）；给 color 时先在目标窗口色板区 CV 定位
+    实心纯色色板点并安全点击（找不到 → color_required=True 则 404，
+    否则用当前色如实 fallback）。
+    """
+
+    def trajectory(self, points: List[List[float]],
+                   color: Optional[str] = None, *,
+                   hwnd: Optional[int] = None,
+                   window: Optional[str] = None,
+                   duration_ms: int = 800, smooth_iterations: int = 2,
+                   closed: bool = False, color_required: bool = False,
+                   settle_seconds: float = 0.1,
+                   monitor: int = 1, **kw: Any) -> Dict[str, Any]:
+        """画一条平滑轨迹。points 为物理像素 [[x,y],...]（≥2 点）；
+        color 为颜色名（blue/red/green/yellow/orange/purple/black/white）
+        或 #RRGGBB。closed=True 会让首尾相接（画图软件会并成闭合形状，
+        默认开放）。返回 {ok, color:{found,clicked,fallback}, stroke:{...},
+        result:{...drag 结果}}。"""
+        body: Dict[str, Any] = {
+            "points": [[float(p[0]), float(p[1])] for p in points],
+            "duration_ms": int(duration_ms),
+            "smooth_iterations": int(smooth_iterations),
+            "closed": bool(closed),
+            "color_required": bool(color_required),
+            "settle_seconds": settle_seconds,
+            "monitor": monitor,
+        }
+        if color is not None:
+            body["color"] = str(color)
+        if hwnd is not None:
+            body["hwnd"] = int(hwnd)
+        if window is not None:
+            body["window"] = str(window)
+        kw.setdefault("capabilities", self._client.capabilities)
+        return self._client.request("POST", "/draw_trajectory",
+                                    {**body, **kw}, timeout=120.0)
+
+
 class TaskAPI(_Namespace):
     """任务生命周期 + 自动轮询。步骤 schema 见 README：macro / action / wait / require_vision。"""
 
@@ -362,6 +407,7 @@ class GhostClient:
         self.health = HealthAPI(self)
         self.environment = EnvironmentAPI(self)
         self.action = ActionAPI(self)
+        self.draw = DrawAPI(self)
         self.task = TaskAPI(self)
         self.system = SystemAPI(self)
         self.window = WindowAPI(self)

@@ -675,6 +675,98 @@ def _analyze_llama(monitor: int, hwnd: Optional[int],
     return controls, timings
 
 
+# ---- 自由问答 describe（v0.9.1）：让 VLM "读"图而非只做 grounding --------
+#
+# 与 analyze（控件 JSON 契约）不同：describe 不解析控件、不做 bbox 映射，
+# 就是把图喂给本地多模态模型 + 一个开放问题，原文回传描述。主仓 Iris
+# 可以直接传 image_b64 问"这张图里画了什么"，无需先落盘。
+
+_DESCRIBE_SYSTEM = (
+    "You are a helpful vision assistant. Look at the image and answer the "
+    "user's question faithfully based only on what is visible. Answer in "
+    "the same language as the question. Be concise and concrete.")
+
+
+def describe(monitor: int = 1, window: Optional[str] = None,
+             hwnd: Optional[int] = None, backend: Optional[str] = None,
+             question: str = "", image_b64: Optional[str] = None,
+             max_tokens: int = 512) -> Dict[str, Any]:
+    """开放问答：对截图/窗口/外部图片问一个自由问题，返回模型原文。
+
+    - image_b64 给出 → 直接喂该图（主仓自己的截图/裁剪图，不抓屏）；
+    - 否则按 window/hwnd 抓屏裁剪（语义与 analyze 一致，都缺省=前台）。
+    - 只支持 llama 后端（真正的多模态语义理解）；ocr/native 只会读字，
+      对"画了什么"没有语义 → 503 如实拒绝，绝不冒充。
+    """
+    q = str(question or "").strip()
+    if not q:
+        raise VLError("describe requires a non-empty question")
+    if not image_b64 and (backend or config.VL_BACKEND or "auto") != "llama" \
+            and pick_backend(backend) != "llama":
+        raise VLBackendUnavailable(
+            "describe requires the llama backend (GHOST_VL_MODEL_PATH); "
+            "current backend would be " + repr(pick_backend(backend))
+            + " which cannot answer open questions about images")
+    text, timings = _describe_llama(monitor, hwnd, q, image_b64, max_tokens)
+    return {"ok": True, "backend": "llama", "question": q,
+            "description": text, "timings": timings}
+
+
+def _describe_llama(monitor: int, hwnd: Optional[int], question: str,
+                    image_b64: Optional[str], max_tokens: int
+                    ) -> Tuple[str, Dict[str, Any]]:
+    import base64
+    import io
+    if image_b64:
+        from PIL import Image
+        try:
+            crop_img = Image.open(io.BytesIO(base64.b64decode(image_b64)))
+            crop_img = crop_img.convert("RGB")
+        except Exception as exc:  # noqa: BLE001
+            raise VLError("image_b64 is not a decodable image: "
+                          + type(exc).__name__ + ": " + str(exc)) from exc
+    else:
+        crop_img, _origin = _grab_window(monitor, hwnd)
+    fitted, scale = _fit_for_vl(crop_img, config.VL_MAX_SIDE)
+    buf = io.BytesIO()
+    fitted.save(buf, format="PNG")
+    b64 = base64.b64encode(buf.getvalue()).decode("ascii")
+    llm = _get_llama()
+    t0 = time.perf_counter()
+    ttft: Optional[float] = None
+    chunks: List[str] = []
+    try:
+        stream = llm.create_chat_completion(
+            messages=[{"role": "system", "content": _DESCRIBE_SYSTEM},
+                      {"role": "user", "content": [
+                          {"type": "image_url", "image_url": {
+                              "url": "data:image/png;base64," + b64}},
+                          {"type": "text", "text": question}]}],
+            temperature=0.0, max_tokens=max(32, int(max_tokens)),
+            stream=True)
+        for chunk in stream:
+            piece = ((chunk.get("choices") or [{}])[0].get("delta")
+                     or {}).get("content")
+            if piece:
+                if ttft is None:
+                    ttft = time.perf_counter() - t0
+                chunks.append(piece)
+    except Exception as exc:  # noqa: BLE001
+        raise VLError("llama describe failed: " + type(exc).__name__
+                      + ": " + str(exc)) from exc
+    total = time.perf_counter() - t0
+    content = "".join(chunks).strip()
+    timings = {
+        "input_px": [fitted.width, fitted.height],
+        "scale": round(scale, 4),
+        "ttft_ms": int(ttft * 1000) if ttft is not None else None,
+        "total_ms": int(total * 1000),
+        "gen_ms": int((total - ttft) * 1000) if ttft is not None else None,
+        "completion_chars": len(content),
+    }
+    return content, timings
+
+
 def hybrid_enabled() -> bool:
     """auto=仅 7b 档启用；1/true=强制；0/false=关闭。"""
     mode = (config.VL_HYBRID or "auto").strip().lower()

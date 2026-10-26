@@ -22,7 +22,7 @@ import os
 import sys
 import time
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 import requests
 
@@ -107,7 +107,9 @@ mcp = MCPServer(
         "moray-ghost desktop automation gateway. analyze_screen reads native "
         "window controls; click_element routes web targets to CDP and native "
         "targets to VL+safe click; type_text types into a window (focus it "
-        "first via click_element); execute_task runs a queued task. "
+        "first via click_element); draw_trajectory draws a smooth mouse "
+        "stroke (optionally picking a palette color first); execute_task "
+        "runs a queued task. "
         "Identity/capabilities come from the spawn environment "
         "(GHOST_TOKEN / GHOST_AGENT_ID / GHOST_CAPABILITIES) and are enforced "
         "server-side; security denials are returned as structured "
@@ -262,6 +264,33 @@ def execute_task(task_payload: Dict[str, Any], wait: bool = True,
     view["detail"] = "task still " + str(view.get("status")) + \
         " after " + str(timeout_s) + "s; poll GET /task/" + str(tid)
     return view
+
+
+@mcp.tool()
+def draw_trajectory(points: List[List[float]], color: Optional[str] = None,
+                    hwnd: Optional[int] = None, window: Optional[str] = None,
+                    duration_ms: int = 800, smooth_iterations: int = 2,
+                    closed: bool = False,
+                    color_required: bool = False) -> Dict[str, Any]:
+    """画一条平滑鼠标轨迹（纯鼠标绘制底层：Chaikin 平滑 + 降采样 + 真实鼠标事件）。
+
+    points 为物理像素 [[x,y],...]（≥2 点，服务端平滑降采样到 ≤2000 点）。
+    color（可选）先在目标窗口色板区找实心纯色色板点并点击（名称或 #RRGGBB；
+    找不到且 color_required=true → 404，否则用当前色 fallback）。落笔走
+    drag 的全套安全管道（归属门禁/Fail-Safe/硬超时/审计）。closed=true 会
+    画闭合曲线（注意：画图软件会把闭合笔迹并成闭合形状）。
+    """
+    payload: Dict[str, Any] = {
+        "points": points, "duration_ms": int(duration_ms),
+        "smooth_iterations": int(smooth_iterations), "closed": bool(closed),
+        "color_required": bool(color_required)}
+    if color:
+        payload["color"] = str(color)
+    if hwnd is not None:
+        payload["hwnd"] = int(hwnd)
+    if window:
+        payload["window"] = str(window)
+    return _post("/draw_trajectory", payload, timeout=120)
 
 
 def main() -> int:

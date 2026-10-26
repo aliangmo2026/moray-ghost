@@ -15,8 +15,9 @@ python E:\moray-ghost\mcp_server.py     ← 客户端按下面的配置拉起这
 Ghost 服务（需先在运行：.\start.ps1 或 .venv\Scripts\python.exe run.py）
 ```
 
-4 个工具：`analyze_screen`（看窗口控件）、`click_element`（按文本点击）、
-`type_text`（键入）、`execute_task`（安全队列执行任务）。
+5 个工具：`analyze_screen`（看窗口控件）、`click_element`（按文本点击）、
+`type_text`（键入）、`draw_trajectory`（平滑鼠标绘制，可先取色板颜色）、
+`execute_task`（安全队列执行任务）。
 
 ## 1. 前置条件
 
@@ -51,7 +52,7 @@ Ghost 服务（需先在运行：.\start.ps1 或 .venv\Scripts\python.exe run.py
   Ghost 服务端强制核对）。**留空或写 `[]` 表示不允许任何输入类动作**
   （analyze_screen 只读仍可用；点击/键入/任务会被服务端 403 拒绝）——
   这是故意的默认拒绝语义；
-- 保存后重启 Cursor，工具列表里应出现 `moray-ghost` 的 4 个工具。
+- 保存后重启 Cursor，工具列表里应出现 `moray-ghost` 的 5 个工具。
 
 ## 3. Claude Desktop 配置
 

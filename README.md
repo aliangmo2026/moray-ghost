@@ -1,12 +1,12 @@
 # moray-ghost
 
-![version](https://img.shields.io/badge/version-0.9.0-blue)
+![version](https://img.shields.io/badge/version-0.9.1-blue)
 ![python](https://img.shields.io/badge/python-3.12.2-3776AB?logo=python&logoColor=white)
 ![platform](https://img.shields.io/badge/platform-Windows%2010%20%2F%2011-0078D6)
-![regression](https://img.shields.io/badge/regression-345%2B%20checks%20passed-brightgreen)
+![regression](https://img.shields.io/badge/regression-390%2B%20checks%20passed-brightgreen)
 ![audit](https://img.shields.io/badge/audit-JSONL%20%2B%20token%20fingerprint-lightgrey)
 
-Windows 桌面自动化本地服务（v0.9.0）：**mss 极速截图 + 授权式 pyautogui 动作 + 宏录制/安全重放 + 任务生命周期 + 环境感知 + 视觉反哺 Heal + 多 Agent 任务队列 + Web 监控面板 + 官方 Python SDK + MCP Server（Stdio，任意 AI Agent 即插即用）+ 本地 VL 感知（rapidocr / llama-cpp CUDA GGUF，2B/7B 档位 + CV+VL 混合图标定位）+ v0.7 绝对防御 + v0.7.1 企业级安全 + v0.7.2 极限安全**。
+Windows 桌面自动化本地服务（v0.9.1）：**mss 极速截图 + 授权式 pyautogui 动作 + 宏录制/安全重放 + 任务生命周期 + 环境感知 + 视觉反哺 Heal + 多 Agent 任务队列 + Web 监控面板 + 官方 Python SDK + MCP Server（Stdio，任意 AI Agent 即插即用）+ 本地 VL 感知（rapidocr / llama-cpp CUDA GGUF，2B/7B 档位 + CV+VL 混合图标定位）+ 纯鼠标平滑绘制 draw_trajectory + v0.7 绝对防御 + v0.7.1 企业级安全 + v0.7.2 极限安全**。
 
 只监听 `127.0.0.1:8030`；绝不触碰 `D:\MoRay`（主仓）。
 
@@ -103,6 +103,24 @@ Windows 桌面自动化本地服务（v0.9.0）：**mss 极速截图 + 授权式
 > 画图/指针应用才能看到真实曲线；Fail-Safe 四角检查保留，v0.7.2 极限安全
 > **40/40** 复验。MCP **21/21**、画图 **11/11** 同步回归；`vl_driver` 在
 > auto 模式下 llama 控件 ≤1 条时用 OCR 补全控件表（`timings.ocr_merged`）。
+
+> **v0.9.1 通用绘制接口 + VLM 读图闭环**：鲸鱼的"平滑 + 降采样 + 真实鼠标事件"
+> 沉淀为底座资产 **`draw_trajectory(points, color)`**——服务端
+> `app/core/trajectory.py`（Chaikin 平滑 + ≤2000 点等距降采样 + HSV 色板定位）
+> + 复合端点 `POST /api/ghost/draw_trajectory`（取色点击与落笔两段都走
+> `run_action` 同一安全管道：冻结/环境门禁前置、归属门禁/逐点 Fail-Safe/
+> 硬超时/审计全生效；色板未找到 `color_required=true` → 404，否则如实
+> fallback）；SDK `client.draw.trajectory(...)`；**MCP 第 5 个工具**
+> `draw_trajectory`。验收 `scripts/test_v09_draw_trajectory.py` **31/31**
+> （单元 11 + 契约 9 + Paint 真绘端到端 8：色板命中并点击、1333 笔迹像素全蓝）。
+> **VLM 读自己的画**：新增 `POST /api/ghost/vl/describe`（自由问答式读图，
+> 支持直接喂 image_b64——主仓 Iris 可发自己的截图/裁剪图），
+> `scripts/test_v09_vlm_read_whale.py` **4/4**：Qwen2-VL-2B 看着鲸鱼画作
+> 答"一条鱼""蓝色的""水花、爱心、海浪、泡泡"（鱼级而非鲸级 = 2B 真实能力
+> 边界，如实记录）。**踩坑沉淀**：`docs/底层物理控制.md`——SetCursorPos 不
+> 触发轨迹 / ctypes 签名污染毒死 pyautogui / 画图软件合并闭合线。官方封面
+> `docs/assets/whale_cover.html`（轨迹重放动画 + 真实截图，自包含单文件，
+> `scripts/make_whale_cover.py` 再生成）。
 
 ## ⚠️ 测试纪律红线（所有脚本强制执行，违反即事故）
 
@@ -454,14 +472,21 @@ app/core/audit_sink.py      v0.7.1 结构化审计落盘（data/ghost_audit.json
 app/core/janitor.py         v0.7.1 异常清道夫（失败/取消释放按键鼠标 + 线程盘点）
 app/core/estop.py           v0.7.1 全局急停热键 Ctrl+Alt+Q（释放输入 → 审计 → os._exit）
 app/core/breaker.py         v0.7.2 动作频率熔断（窗口/连续双阈值 → 429 + 强制冻结）
-app/core/vl_driver.py       v0.8.0 VL 感知（native/ocr/llama/mock 四后端 + 路由分流 + 匹配铁律；v0.9 GPU/OCR 标签复核）
+app/core/vl_driver.py       v0.8.0 VL 感知（native/ocr/llama/mock 四后端 + 路由分流 + 匹配铁律；v0.9 GPU/OCR 标签复核；v0.9.1 describe 自由问答）
 app/core/icon_grid.py       v0.9 CV 图标粗筛 + 编号 contact sheet（混合定位）
-app/api/vl_routes.py        v0.8.0 POST /vl/analyze（服务端跑感知，需 token，只读；v0.9 target/hybrid）
-mcp_server.py               v0.8.0 MCP Server（官方 SDK Stdio；4 Tools；身份/白名单环境注入）
+app/core/trajectory.py      v0.9.1 绘制资产：Chaikin 平滑 + 降采样 + HSV 色板定位
+app/api/vl_routes.py        v0.8.0 POST /vl/analyze（服务端跑感知，需 token，只读；v0.9 target/hybrid；v0.9.1 + /vl/describe）
+app/api/draw_routes.py      v0.9.1 POST /draw_trajectory（取色+落笔复合动作，全安全管道）
+mcp_server.py               v0.8.0 MCP Server（官方 SDK Stdio；v0.9.1 起 5 Tools；身份/白名单环境注入）
 scripts/ghost_watchdog.py   v0.7.2 独立看门狗（主进程被强杀后 keybd_event 释放修饰键）
 scripts/test_v072_extreme.py  v0.7.2 极限安全验收：UAC/看门狗/熔断/硬超时（40 checks）
 scripts/test_v08_mcp_vl.py  v0.8.0 MCP+VL 验收：Stdio/感知/点击/打字/任务/门禁（21 checks）
 scripts/test_v09_hybrid_icons.py  v0.9 混合图标 CV/编号网格/开关矩阵单测（6 checks）
+scripts/test_v09_draw_whale.py  v0.9 纯鼠标鲸鱼绘画全链路（25 checks）
+scripts/test_v09_draw_trajectory.py  v0.9.1 通用绘制接口验收：单元/契约/Paint 端到端（31 checks）
+scripts/test_v09_vlm_read_whale.py  v0.9.1 VLM 读自己的画（describe，4 checks）
+scripts/make_whale_cover.py  v0.9.1 官方封面生成（docs/assets/whale_cover.html）
+docs/底层物理控制.md         v0.9.1 物理层三大踩坑：SetCursorPos/ctypes 污染/闭合线合并
 docs/v0.8-design.md         v0.8.0 vl_driver + mcp_server 设计结构（与实现同步）
 docs/MCP_接入指南.md         Cursor/Claude Desktop 接入 + 模型下载放置 + 排障
 scripts/test_v08_paint_precision.py  画图像素级精度综合（MCP 全链 + cv2 逐边对比）

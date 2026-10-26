@@ -267,15 +267,17 @@ async def scenario(stem: str, hwnd: int, btn_c: tuple) -> None:
                   f"server={getattr(si, 'name', None)}")
             tools = await s.list_tools()
             names = sorted(t.name for t in tools.tools)
-            check("1 tools/list 恰为 4 个标准工具",
+            check("1 tools/list 恰为 5 个标准工具",
                   names == ["analyze_screen", "click_element",
-                            "execute_task", "type_text"], str(names))
+                            "draw_trajectory", "execute_task",
+                            "type_text"], str(names))
             schema_ok = True
             for t in tools.tools:
                 sch = getattr(t, "input_schema", None) or {}
                 need = {"analyze_screen": {"monitor", "window", "backend"},
                         "click_element": {"text", "window", "channel"},
                         "type_text": {"text", "hwnd"},
+                        "draw_trajectory": {"points"},
                         "execute_task": {"task_payload"}}[t.name]
                 if not need <= set(sch.get("properties", {})):
                     schema_ok = False
