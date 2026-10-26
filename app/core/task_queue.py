@@ -37,6 +37,7 @@ _wake = threading.Event()           # enqueue 唤醒调度线程
 _stop = threading.Event()
 _frozen = threading.Event()
 _frozen_at: Optional[str] = None
+_frozen_reason: Optional[str] = None   # v0.7.2：emergency_stop / rate_circuit_break / action_hard_timeout
 _running_task: Optional[Any] = None  # 正在执行的 TaskRun（冻结时对其置 cancel_event）
 _thread: Optional[threading.Thread] = None
 
@@ -104,6 +105,11 @@ def frozen_at() -> Optional[str]:
     return _frozen_at
 
 
+def frozen_reason() -> Optional[str]:
+    """v0.7.2：冻结原因（emergency_stop / rate_circuit_break / action_hard_timeout）。"""
+    return _frozen_reason
+
+
 def assert_not_frozen() -> None:
     """冻结期门禁：由路由层在 start/resume/replay/execute_action 前调用。"""
     if _frozen.is_set():
@@ -116,7 +122,7 @@ class FrozenError(Exception):
 
 def freeze(reason: str = "emergency_stop") -> Dict[str, Any]:
     """紧急停止：清空队列 + 冻结 + 请求运行中任务在步骤边界停止。"""
-    global _frozen_at
+    global _frozen_at, _frozen_reason
     canceled: List[str] = []
     with _qlock:
         pending = list(_queue)
@@ -124,6 +130,7 @@ def freeze(reason: str = "emergency_stop") -> Dict[str, Any]:
         running = _running_task
     _frozen.set()
     _frozen_at = _now()
+    _frozen_reason = str(reason)
     for task in pending:
         with task.lock:
             if task.status in ("created", "queued", "degraded"):
@@ -143,10 +150,13 @@ def freeze(reason: str = "emergency_stop") -> Dict[str, Any]:
 
 
 def release() -> None:
-    """解除冻结，恢复派发。"""
-    global _frozen_at
+    """解除冻结，恢复派发；一并解除频率熔断（重新武装计数器）。"""
+    global _frozen_at, _frozen_reason
     _frozen.clear()
     _frozen_at = None
+    _frozen_reason = None
+    from . import breaker  # 延迟 import：breaker 顶层依赖本模块的兄弟，防环
+    breaker.reset()
     _wake.set()
     LOG.warning("emergency stop released; dispatch resumed")
 

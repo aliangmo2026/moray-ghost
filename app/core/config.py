@@ -17,7 +17,7 @@ ENV_PATH = BASE_DIR / ".env"
 load_dotenv(ENV_PATH)
 
 SERVICE = "moray-ghost"
-VERSION = "0.7.1"
+VERSION = "0.7.2"
 
 HOST = os.getenv("GHOST_HOST", "127.0.0.1")
 PORT = int(os.getenv("GHOST_PORT", "8030"))
@@ -32,6 +32,22 @@ ESTOP_HOTKEY = os.getenv("GHOST_ESTOP_HOTKEY", "ctrl+alt+q").strip().lower()
 
 # 结构化审计落盘（v0.7.1）：JSON Lines，一行一事件，供安全审计追溯。
 AUDIT_PATH = DATA_DIR / "ghost_audit.jsonl"
+
+# ---- v0.7.2 极限安全 ------------------------------------------------------
+
+# 动作硬超时（秒）：锁等待 + 执行两段各受此预算约束（拖拽等声明时长另加补偿）。
+# 超时 → 强制释放按键鼠标 + 冻结服务 + 408 ACTION_TIMEOUT。
+ACTION_TIMEOUT = float(os.getenv("GHOST_ACTION_TIMEOUT", "10"))
+
+# 动作频率熔断（防 AI 死循环）：同一指纹（action+x+y+…）在窗口内超限，或
+# 连续重复超限 → 429 RATE_CIRCUIT_BREAK + 强制冻结，通知主仓。
+RATE_LIMIT_COUNT = int(os.getenv("GHOST_RATE_LIMIT_COUNT", "10"))
+RATE_LIMIT_WINDOW = float(os.getenv("GHOST_RATE_LIMIT_WINDOW", "1.0"))
+RATE_LIMIT_CONSECUTIVE = int(os.getenv("GHOST_RATE_LIMIT_CONSECUTIVE", "50"))
+
+# 独立看门狗（v0.7.2）：主进程被强杀后释放系统修饰键（防按键卡死）。
+WATCHDOG_ENABLED = os.getenv("GHOST_WATCHDOG", "true").strip().lower() in (
+    "1", "true", "yes")
 
 # CDP 浏览器接管（v0.6 M2）：仅允许 loopback 调用点（browser_driver 使用前再校验一次）
 BROWSER_CDP_URL = os.getenv("GHOST_BROWSER_CDP_URL", "http://127.0.0.1:9222").strip()

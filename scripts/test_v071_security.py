@@ -34,6 +34,7 @@ import re
 import socket
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -90,8 +91,19 @@ def spawn(args: list, env_extra: dict | None = None) -> subprocess.Popen:
     return proc
 
 
-def spawn_server(env_extra: dict | None = None) -> subprocess.Popen:
-    return spawn([sys.executable, str(ROOT / "run.py")], env_extra)
+def spawn_server(env_extra: dict | None = None,
+                 drain: bool = True) -> subprocess.Popen:
+    proc = spawn([sys.executable, str(ROOT / "run.py")], env_extra)
+    if drain:
+        # 服务器输出持续排干：管道写满会卡死服务端 logging 锁级联（v0.7.2 栈转储实证）
+        def _drain():
+            try:
+                for _ in proc.stdout:
+                    pass
+            except Exception:  # noqa: BLE001
+                pass
+        threading.Thread(target=_drain, daemon=True).start()
+    return proc
 
 
 def spawn_script(name: str, *args: str,
@@ -272,7 +284,7 @@ def phase_mutex() -> None:
     check("A-1 holder 已持锁（探针 BUSY）", held)
     if held:
         check("A-1 此刻端口仍空闲（隔离互斥体变量）", port_free())
-        second = spawn_server()
+        second = spawn_server(drain=False)
         rc2 = wait_exit(second, timeout=20)
         out2 = log_text(second)
         check("A-1 第二实例被互斥体拒绝（exit=1 + FATAL）",
@@ -291,7 +303,7 @@ def phase_mutex() -> None:
         blocker.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         blocker.bind(("127.0.0.1", 8030))
         blocker.listen(1)
-        third = spawn_server()
+        third = spawn_server(drain=False)
         rc3 = wait_exit(third, timeout=20)
         out3 = log_text(third)
         check("A-2 端口被占 → 第二实例被端口门禁拒绝（exit=1 + port）",
@@ -306,7 +318,7 @@ def phase_mutex() -> None:
     ok_a = wait_healthy()
     check("A-3 实例 A 正常启动", ok_a)
     if ok_a:
-        inst_b = spawn_server()
+        inst_b = spawn_server(drain=False)
         rc_b = wait_exit(inst_b, timeout=20)
         out_b = log_text(inst_b)
         check("A-3 实例 B 被拒（exit=1 + already running）",

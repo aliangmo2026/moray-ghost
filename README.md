@@ -1,12 +1,12 @@
 # moray-ghost
 
-![version](https://img.shields.io/badge/version-0.7.1-blue)
+![version](https://img.shields.io/badge/version-0.7.2-blue)
 ![python](https://img.shields.io/badge/python-3.12.2-3776AB?logo=python&logoColor=white)
 ![platform](https://img.shields.io/badge/platform-Windows%2010%20%2F%2011-0078D6)
-![regression](https://img.shields.io/badge/regression-237%20checks%20passed-brightgreen)
+![regression](https://img.shields.io/badge/regression-314%20checks%20passed-brightgreen)
 ![audit](https://img.shields.io/badge/audit-JSONL%20%2B%20token%20fingerprint-lightgrey)
 
-Windows 桌面自动化本地服务（v0.7.1）：**mss 极速截图 + 授权式 pyautogui 动作 + 宏录制/安全重放 + 任务生命周期 + 环境感知 + 视觉反哺 Heal + 多 Agent 任务队列 + Web 监控面板 + 官方 Python SDK + v0.7 绝对防御（三道门禁 + 能力令牌 + 后置断言）+ v0.7.1 企业级安全（单实例互斥 / 全局急停热键 / 生产输入源过滤 / JSONL 审计 / 异常清道夫）**。
+Windows 桌面自动化本地服务（v0.7.2）：**mss 极速截图 + 授权式 pyautogui 动作 + 宏录制/安全重放 + 任务生命周期 + 环境感知 + 视觉反哺 Heal + 多 Agent 任务队列 + Web 监控面板 + 官方 Python SDK + v0.7 绝对防御（三道门禁 + 能力令牌 + 后置断言）+ v0.7.1 企业级安全（单实例互斥 / 全局急停热键 / 生产输入源过滤 / JSONL 审计 / 异常清道夫）+ v0.7.2 极限安全（UAC 提权免疫 / 独立看门狗 / 频率熔断 / 硬超时 / 健康解耦）**。
 
 只监听 `127.0.0.1:8030`；绝不触碰 `D:\MoRay`（主仓）。
 
@@ -39,6 +39,25 @@ Windows 桌面自动化本地服务（v0.7.1）：**mss 极速截图 + 授权式
 > `data/ghost_audit.jsonl`（JSON Lines：何时 / 谁 / 哪个 token 指纹 / 坐标明细，
 > 绝不落 token 原文）；⑤ **异常清道夫**——任务失败/取消/崩溃强制释放按键鼠标 +
 > 线程盘点入审计（零杂散线程）。验收：`scripts/test_v071_security.py` **37/37**。
+>
+> **⚠️ v0.7.2 极限安全与物理自救（绝对不可逆灾难零容忍）**：
+> ① **UAC 提权免疫**——目标是 `consent.exe` 或「用户账户控制」标题族窗口时，
+> 任何动作直接 **FATAL**（403 `FATAL_UAC_ELEVATION`），先物理释放全部按键鼠标
+> 再拒绝（零输入），审计落 `uac_fatal` 事件；② **独立看门狗**——
+> `scripts/ghost_watchdog.py`（lifespan 自动拉起、DETACHED 独立进程、PID+创建
+> 时间双校验防复用）：主进程被任务管理器强杀后，它用 `keybd_event` 物理释放
+> Ctrl/Shift/Alt/Win 全部左右变体，键盘绝不卡死；③ **动作频率熔断**——同一
+> 指纹 1 秒内 >10 次或连续重复 >50 次 → 429 `RATE_CIRCUIT_BREAK` + **强制冻结
+> 服务**（`frozen_reason=rate_circuit_break` 经 dashboard/state 与全部 503 回包
+> 通知主仓），release 解冻即重新武装；④ **动作硬超时**——锁等待与执行两段
+> 各受 `GHOST_ACTION_TIMEOUT`（默认 10s）预算约束，超时 → abort 未开始的执行
+> + 物理释放按键鼠标 + 冻结 + 408 `ACTION_TIMEOUT`（拖拽声明时长不计入预算，
+> 合法长动作不误杀）；⑤ **健康检查解耦**——`/health`、`/emergency_stop`、
+> `/dashboard/state` 全部 async 化（事件循环直跑、绝不排队等线程池），长动作/
+> 页面加载占满线程池时急停按钮与探活依然即时；⑥ **控制台非阻塞**——服务
+> stdout/stderr 从 FD 层置非阻塞，父进程不读日志管道时宁可丢日志也绝不卡死
+> 服务（栈转储实证修复的整机假死死锁）；⑦ `GHOST_STACKDUMP_INTERVAL` 周期
+> 线程栈取证。验收：`scripts/test_v072_extreme.py` **40/40**。
 
 ## ⚠️ 测试纪律红线（所有脚本强制执行，违反即事故）
 
@@ -195,6 +214,7 @@ HTTP 层   FastAPI @ 127.0.0.1:8030，全部接口挂 /api/ghost/ 前缀
 .venv\Scripts\python scripts\smoke.py         # 冒烟：health / screenshot / 401 / macro 占位
 .venv\Scripts\python scripts\smoke.py --failsafe   # 追加：Fail-Safe 409 现场测试
 .venv\Scripts\python scripts\test_v071_security.py # v0.7.1 安全验收（互斥/热键/审计/生产过滤）
+.venv\Scripts\python scripts\test_v072_extreme.py # v0.7.2 极限安全验收（UAC/看门狗/熔断/硬超时）
 ```
 
 冒烟脚本会把鼠标甩到屏幕左上角再还原（`--failsafe` 时）；`--no-click` 可跳过真实点击。
@@ -384,6 +404,9 @@ app/core/authz.py           v0.7.1 调用来源/身份上下文 + 生产输入�
 app/core/audit_sink.py      v0.7.1 结构化审计落盘（data/ghost_audit.jsonl，token 指纹）
 app/core/janitor.py         v0.7.1 异常清道夫（失败/取消释放按键鼠标 + 线程盘点）
 app/core/estop.py           v0.7.1 全局急停热键 Ctrl+Alt+Q（释放输入 → 审计 → os._exit）
+app/core/breaker.py         v0.7.2 动作频率熔断（窗口/连续双阈值 → 429 + 强制冻结）
+scripts/ghost_watchdog.py   v0.7.2 独立看门狗（主进程被强杀后 keybd_event 释放修饰键）
+scripts/test_v072_extreme.py  v0.7.2 极限安全验收：UAC/看门狗/熔断/硬超时（40 checks）
 app/core/macro_store.py     SQLite 读写 + schema 初始化
 app/core/macro_runner.py    重放骨架（v0.3 落地）
 sdk/                        官方 Python SDK（GhostClient，仅依赖 requests）

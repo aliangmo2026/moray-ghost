@@ -75,9 +75,10 @@ def _frozen() -> Optional[JSONResponse]:
     if task_queue.is_frozen():
         return JSONResponse(status_code=503, content={
             "ok": False, "error": "GHOST_FROZEN",
-            "detail": "ghost is frozen by emergency stop at "
-                      + str(task_queue.frozen_at())
-                      + "; POST /api/ghost/emergency_stop/release to unfreeze"})
+            "detail": "ghost is frozen (" + str(task_queue.frozen_reason())
+                      + ") at " + str(task_queue.frozen_at())
+                      + "; POST /api/ghost/emergency_stop/release to unfreeze",
+            "frozen_reason": task_queue.frozen_reason()})
     return None
 
 
@@ -181,9 +182,10 @@ def list_tasks(request: Request,
 
 
 @router.post("/emergency_stop")
-def emergency_stop(request: Request):
+async def emergency_stop(request: Request):
     """紧急停止：清空任务队列（排队任务全部 canceled）+ 冻结 Ghost。
 
+    v0.7.2：async 化——急停按钮在任何线程池饱和场景下都即时生效（事件循环直跑）。
     冻结生效后 start/resume/execute_action/宏重放一律 503 GHOST_FROZEN；
     正在跑的任务在下一个步骤边界安全点停止（绝不切断进行中的输入）。
     解冻：POST /api/ghost/emergency_stop/release。
@@ -195,7 +197,7 @@ def emergency_stop(request: Request):
 
 
 @router.post("/emergency_stop/release")
-def emergency_stop_release(request: Request):
+async def emergency_stop_release(request: Request):
     authz.bind_request(request)
     audit_sink.write("emergency_release", detail="frozen cleared; dispatch resumed")
     task_queue.release()

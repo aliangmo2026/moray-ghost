@@ -27,13 +27,15 @@ api_router = APIRouter(prefix="/api/ghost")
 
 
 @api_router.get("/dashboard/state")
-def dashboard_state() -> Dict[str, Any]:
+async def dashboard_state() -> Dict[str, Any]:
+    # v0.7.2 async：急停按钮的数据源在任何线程池饱和场景下都即时可读
     return {
         "ok": True,
         "service": SERVICE,
         "version": VERSION,
         "frozen": task_queue.is_frozen(),
         "frozen_at": task_queue.frozen_at(),
+        "frozen_reason": task_queue.frozen_reason(),
         "queue_depth": task_queue.depth(),
         "running": task_queue.running_view(),
         "queued": task_queue.snapshot(),

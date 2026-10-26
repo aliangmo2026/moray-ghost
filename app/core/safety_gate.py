@@ -45,6 +45,31 @@ HIGH_RISK_PROCESSES = frozenset({
 # 标题黑名单：ASCII 词按 lower() 匹配子串，中文按原样子串。
 HIGH_RISK_TITLE_TOKENS = ("uac", "用户账户控制", "格式化", "删除")
 
+# ---- 1b) UAC 提权弹窗 = FATAL 级（v0.7.2，高于普通黑名单） ----------------
+# UAC 提权窗口（consent.exe 宿主 / 「用户账户控制」标题族）一旦被点击即可能
+# 在安全桌面上放行提权——属于"绝对不可逆灾难"级目标：任何动作直接 FATAL，
+# 且 controller 侧先物理释放按键鼠标再拒绝（零输入）。
+UAC_FATAL_PROCESSES = frozenset({"consent.exe"})
+UAC_FATAL_TITLE_TOKENS = ("用户账户控制", "用户帐户控制", "user account control")
+
+
+def uac_fatal_reason(info: Optional[Dict[str, Any]]) -> Optional[str]:
+    """UAC 提权弹窗判定（FATAL 级）：命中返回理由，放行 None。只读。"""
+    if not info:
+        return None
+    proc = str(info.get("process") or "").strip().lower()
+    if proc in UAC_FATAL_PROCESSES:
+        return ("UAC elevation prompt process " + repr(info.get("process"))
+                + " (FATAL: elevation dialogs must never be clicked)")
+    title = str(info.get("title") or "")
+    lowered = title.lower()
+    for tok in UAC_FATAL_TITLE_TOKENS:
+        if tok in lowered:
+            return ("UAC elevation window title contains " + repr(tok)
+                    + ": " + repr(title)
+                    + " (FATAL: elevation dialogs must never be clicked)")
+    return None
+
 
 def window_info(hwnd: int) -> Optional[Dict[str, Any]]:
     """hwnd → {"hwnd","pid","process","title"}；无效窗口 → None。只读，不缓存。"""

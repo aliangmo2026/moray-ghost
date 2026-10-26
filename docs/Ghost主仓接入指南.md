@@ -188,3 +188,25 @@ degraded（REQUIRE_VISION）→ resume → **done**（逐步结果含 run_id 与
    坐标明细——主仓安全团队可直接接入 SIEM；文件不含 token 原文。
 5. **请求格式/必填字段无变更**：capabilities（v0.7）之后无新的破坏性变更，
    对接代码不需要修改。
+
+## 9. v0.7.2 极限安全（新增错误码与冻结原因语义）
+
+主仓现有接入方式（HTTP + Token）零改动；以下是需要纳入处置矩阵的**新响应语义**：
+
+| 状态码 | error | 触发 | 主仓处置 |
+|---|---|---|---|
+| 403 | `FATAL_UAC_ELEVATION` | 目标是 UAC 提权弹窗（consent.exe / 「用户账户控制」标题） | **最高级告警**：说明视觉/规划把提权弹窗当成了目标；人工复核指令链，绝不重试自动点击 |
+| 429 | `RATE_CIRCUIT_BREAK` | 同一动作指纹 1s 内 >10 次或连续 >50 次（AI 死循环判定） | 服务已强制冻结（`frozen_reason=rate_circuit_break`）；复核任务规划，确认后 `POST /emergency_stop/release` 解冻 |
+| 408 | `ACTION_TIMEOUT` | 锁等待（`phase=lock_wait`）或执行超预算（`phase=exec_deadline`/`mid_action`） | 超时时已物理释放按键鼠标并冻结；长动作请拆步（拖拽 duration_ms 声明时长不计入预算） |
+
+- **冻结原因可追溯**：`GET /dashboard/state`（免 token）与所有 503 `GHOST_FROZEN`
+  回包均带 `frozen_reason`（`emergency_stop` / `rate_circuit_break` /
+  `action_hard_timeout`），主仓据此区分"人为急停"与"系统熔断"。
+- **探活永不阻塞**：`/health`、`/emergency_stop`、`/dashboard/state` 已 async 化
+  ——长动作/页面加载占满执行线程时，探活与急停按钮依然即时响应；急停按钮
+  优先级最高。
+- **物理自救通道**：Ghost 被任务管理器强杀时，独立看门狗进程会释放全部系统
+  修饰键（主仓无需感知，键盘不卡死）。
+- **硬超时预算**：默认 `GHOST_ACTION_TIMEOUT=10`（秒），锁等待与执行各一段；
+  拖拽的 `duration_ms` 与 `settle_seconds` 声明时长自动计入预算（+2s 固定开销
+  余量），契约内合法长动作不会误杀。

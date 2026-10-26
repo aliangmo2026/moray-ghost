@@ -25,7 +25,9 @@ router = APIRouter(prefix="/api/ghost")
 
 
 @router.get("/health")
-def health() -> Dict[str, Any]:
+async def health() -> Dict[str, Any]:
+    """v0.7.2 关键路径异步化：async 处理器直接跑在事件循环上，绝不排队等
+    线程池——即使所有动作线程被长任务占满，健康检查依然即时返回。"""
     return {
         "status": "ok",
         "service": SERVICE,
@@ -36,6 +38,8 @@ def health() -> Dict[str, Any]:
         "monitors": [m for m in screen_mss.monitors() if m["index"] != 0],
         "cursor": list(backend.position()),
         "db_path": str(DB_PATH),
+        "frozen": task_queue.is_frozen(),
+        "frozen_reason": task_queue.frozen_reason(),
     }
 
 
@@ -146,8 +150,9 @@ def execute_action(req: ExecuteRequest,
                           {"x": req.x, "y": req.y, "monitor": req.monitor}, False, 503)
         return JSONResponse(status_code=503, content={
             "ok": False, "error": "GHOST_FROZEN",
-            "detail": "ghost is frozen by emergency stop at "
-                      + str(task_queue.frozen_at())})
+            "detail": "ghost is frozen (" + str(task_queue.frozen_reason())
+                      + ") at " + str(task_queue.frozen_at()),
+            "frozen_reason": task_queue.frozen_reason()})
     # 环境门禁（v0.4 M2）：锁屏 / 安全桌面 / 桌面不可读时拒绝盲操作
     try:
         environment.assert_input_allowed()

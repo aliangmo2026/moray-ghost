@@ -195,8 +195,9 @@ def replay(macro_id: str, body: ReplayBody, request: Request):
     if not body.dry_run and task_queue.is_frozen():
         return JSONResponse(status_code=503, content={
             "ok": False, "error": "GHOST_FROZEN",
-            "detail": "ghost is frozen by emergency stop at "
-                      + str(task_queue.frozen_at())})
+            "detail": "ghost is frozen (" + str(task_queue.frozen_reason())
+                      + ") at " + str(task_queue.frozen_at()),
+            "frozen_reason": task_queue.frozen_reason()})
     try:
         return macro_runner.replay(macro_id, dry_run=body.dry_run,
                                    allow_fallback=body.allow_fallback,

@@ -15,8 +15,8 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.core import action_log, authz, browser_driver, task_queue
-from app.core import controller
+from app.core import action_log, authz, breaker, browser_driver, task_queue
+from app.core import config, controller
 
 LOG = logging.getLogger("moray-ghost.browser")
 
@@ -69,20 +69,45 @@ def browser_action(body: BrowserActionBody, request: Request) -> Dict[str, Any]:
         action_log.record("cdp", body.op, _detail_of(body), False, 503)
         return JSONResponse(status_code=503, content={
             "ok": False, "error": "GHOST_FROZEN",
-            "detail": "ghost is frozen by emergency stop at "
-                      + str(task_queue.frozen_at())})
+            "detail": "ghost is frozen (" + str(task_queue.frozen_reason())
+                      + ") at " + str(task_queue.frozen_at()),
+            "frozen_reason": task_queue.frozen_reason()})
 
     LOG.info("input_audit channel=cdp op=%s tab=%s selector=%s",
              body.op,
              (body.tab or {}).get("url_contains"),
              (body.selector or {}).get("value"))
 
+    # v0.7.2 取锁有界（页面加载可长耗时，但绝不允许无限排队）+ 频率熔断同源
+    if not controller.ACTION_LOCK.acquire(timeout=config.ACTION_TIMEOUT):
+        action_log.record("cdp", body.op, _detail_of(body), False, 408)
+        return JSONResponse(status_code=408, content={
+            "ok": False, "error": "ACTION_TIMEOUT",
+            "detail": "action lock busy for " + str(config.ACTION_TIMEOUT)
+                      + "s (native action in flight); CDP op not started",
+            "phase": "lock_wait"})
     try:
-        with controller.ACTION_LOCK:
-            out = browser_driver.run_op(body.model_dump())
+        fp = breaker.make_fingerprint(
+            "cdp", body.op,
+            (body.selector or {}).get("value"),
+            (body.tab or {}).get("url_contains"), body.text)
+        trip = breaker.hit(fp)
+        if trip is not None:
+            frozen = breaker.engage("rate_circuit_break", trip)
+            action_log.record("cdp", body.op, _detail_of(body), False, 429)
+            return JSONResponse(status_code=429, content={
+                "ok": False, "error": "RATE_CIRCUIT_BREAK",
+                "detail": "action rate circuit breaker tripped on CDP channel; "
+                          "service force-frozen - release via "
+                          "POST /api/ghost/emergency_stop/release after review",
+                "frozen": True, "frozen_reason": "rate_circuit_break",
+                "frozen_at": frozen.get("frozen_at"), **trip})
+        out = browser_driver.run_op(body.model_dump())
     except browser_driver.BrowserError as exc:
         action_log.record("cdp", body.op, _detail_of(body), False, exc.status)
         return _err(exc)
+    finally:
+        controller.ACTION_LOCK.release()
     out["elapsed_ms"] = out.get("elapsed_ms") or None
     action_log.record("cdp", body.op,
                       {"tab": out.get("tab_url"),

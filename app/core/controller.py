@@ -20,7 +20,8 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
 from . import backend, safety_gate, screen_mss
-from . import action_log, authz, janitor
+from . import action_log, audit_sink, authz, breaker, janitor
+from . import config
 from .backend import FailSafeException
 
 LOG = logging.getLogger("moray-ghost.controller")
@@ -87,6 +88,28 @@ class SourceDeniedError(ActionError):
     error = "SOURCE_DENIED"
 
 
+class FatalUACError(ActionError):
+    """v0.7.2 FATAL 级：目标是 UAC 提权弹窗（consent.exe / 用户账户控制标题）。
+
+    比普通黑名单更高一级：拒绝前先物理释放全部按键鼠标（零输入、零按住态），
+    并落 uac_fatal 审计事件供主仓告警。
+    """
+    status = 403
+    error = "FATAL_UAC_ELEVATION"
+
+
+class RateCircuitBreakError(ActionError):
+    """v0.7.2：动作频率熔断（AI 死循环）——服务已同时被强制冻结。"""
+    status = 429
+    error = "RATE_CIRCUIT_BREAK"
+
+
+class ActionTimeoutError(ActionError):
+    """v0.7.2：动作硬超时（锁等待或执行超预算）——已强制释放按键鼠标并冻结。"""
+    status = 408
+    error = "ACTION_TIMEOUT"
+
+
 class InternalActionError(ActionError):
     status = 500
     error = "INTERNAL_ERROR"
@@ -123,6 +146,29 @@ def _parse_hotkey(combo: str) -> List[str]:
             raise SafetyError(f"unknown key in hotkey combo: {p!r}")
         out.append(p)
     return out
+
+
+def _raise_fatal_uac(reason: str, info: Optional[Dict[str, Any]],
+                     label: str = "") -> None:
+    """UAC 提权弹窗 = FATAL：物理切断（先释放按键鼠标）+ 审计留痕 + 拒绝。
+
+    绝不进入动作执行链（本函数只在门禁层被调，任何物理输入之前）。
+    """
+    janitor.release_input("uac_fatal_guard")
+    try:
+        audit_sink.write("uac_fatal", detail=label + reason,
+                         hwnd=(info or {}).get("hwnd"),
+                         process=(info or {}).get("process"),
+                         title=(info or {}).get("title"))
+    except Exception:  # noqa: BLE001  审计失败不阻断拒绝本身
+        pass
+    LOG.error("FATAL_UAC_ELEVATION %s%s process=%s title=%r",
+              label, reason, (info or {}).get("process"),
+              (info or {}).get("title"))
+    raise FatalUACError(
+        label + reason,
+        hwnd=(info or {}).get("hwnd"), process=(info or {}).get("process"),
+        title=(info or {}).get("title"))
 
 
 def run_action(payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -338,6 +384,10 @@ def _run_action_impl(payload: Dict[str, Any]) -> Dict[str, Any]:
     if want_hwnd:
         info = safety_gate.window_info(int(want_hwnd))
         if info is not None:
+            # v0.7.2 UAC 提权弹窗 = FATAL，先于一切黑名单判定（宁拒不放）
+            uac_reason = safety_gate.uac_fatal_reason(info)
+            if uac_reason:
+                _raise_fatal_uac(uac_reason, info)
             reason = safety_gate.redline_window(info)
             if reason:
                 raise HighRiskWindowError(
@@ -362,14 +412,89 @@ def _run_action_impl(payload: Dict[str, Any]) -> Dict[str, Any]:
     LOG.info("input_audit channel=native action=%s resolved=%s monitor=%s%s",
              action, resolved_physical, monitor, audit_extra)
 
-    with ACTION_LOCK:
-        result = _run_locked_action(action, xi, yi, text, keys, monitor, settle,
-                                    fmt, quality, scale, include_before_b64,
-                                    x_req, y_req, coord_source, resolved_physical,
-                                    want_hwnd, caps,
-                                    trajectory, trajectory_t,
-                                    scroll_dy, scroll_smooth)
-    return result
+    # ---- v0.7.2 硬超时执行 + 频率熔断 -------------------------------------
+    # 两段预算：取锁等待 budget_lock；执行 budget_exec = 硬超时 + 声明时长补偿
+    # （拖拽 duration_ms / settle 是契约内合法时长，不计入超时预算）+ 固定余量
+    # （前后审计抓屏 ~0.3s + 逐点/逐字开销——实测 6s 拖拽真实耗时 ~7.5s）。
+    # 执行在工作线程里进行：请求线程 join 超预算 → 置 abort（未开始的执行在
+    # 进锁后立即放弃，绝不产生输入）+ 物理释放按键鼠标 + 冻结服务 + 408。
+    declared = float(settle)
+    if action == "drag":
+        declared += min(max(int(payload.get("duration_ms") or 600),
+                            100), 10000) / 1000.0
+    budget_lock = float(config.ACTION_TIMEOUT)
+    budget_exec = float(config.ACTION_TIMEOUT) + declared + 2.0  # 固定开销余量
+
+    abort = threading.Event()
+    box: Dict[str, Any] = {}
+
+    def _exec() -> None:
+        got = ACTION_LOCK.acquire(timeout=budget_lock)
+        if not got:
+            box["e"] = ActionTimeoutError(
+                "action lock busy for " + format(budget_lock, ".1f")
+                + "s (another action in flight); request aborted, no input sent",
+                phase="lock_wait", released=False, frozen=False)
+            return
+        try:
+            if abort.is_set():
+                box["e"] = ActionTimeoutError(
+                    "request timed out before execution; aborted, no input sent",
+                    phase="aborted", released=True, frozen=True)
+                return
+            # 频率熔断：只登记真正要上桌面的动作（持锁串行，计数无歧义）
+            fp = breaker.make_fingerprint(
+                "native", action, x_req, y_req,
+                text if action in ("type", "hotkey") else None)
+            trip = breaker.hit(fp)
+            if trip is not None:
+                box["trip"] = trip
+                box["fp"] = fp
+                return
+            try:
+                box["r"] = _run_locked_action(
+                    action, xi, yi, text, keys, monitor, settle,
+                    fmt, quality, scale, include_before_b64,
+                    x_req, y_req, coord_source, resolved_physical,
+                    want_hwnd, caps, trajectory, trajectory_t,
+                    scroll_dy, scroll_smooth, abort)
+            except BaseException as exc:  # noqa: BLE001  在请求线程原样重抛
+                box["e"] = exc
+        finally:
+            ACTION_LOCK.release()
+
+    worker = threading.Thread(target=_exec, name="ghost-action-exec",
+                              daemon=True)
+    worker.start()
+    worker.join(timeout=budget_lock + budget_exec)
+    if worker.is_alive():
+        # 硬超时：中止尚未开始的执行 + 物理释放 + 熔断式冻结，通知主仓。
+        # 正在执行中的线程无法被 Python 强杀——冻结保证它不再有后继输入，
+        # 释放保证系统不遗留"按住"状态（残余风险 = 该原子动作自身收尾）。
+        abort.set()
+        janitor.release_input("action_hard_timeout")
+        trip = breaker.trip_now({
+            "rule": "hard_timeout", "action": action,
+            "budget_seconds": round(budget_lock + budget_exec, 3)})
+        frozen = breaker.engage("action_hard_timeout", trip)
+        raise ActionTimeoutError(
+            "action exceeded hard timeout ("
+            + format(budget_lock + budget_exec, ".1f")
+            + "s); input forcibly released and service frozen",
+            phase="exec_deadline", released=True, frozen=True,
+            frozen_at=frozen.get("frozen_at"), trip_info=trip)
+    if "trip" in box:
+        frozen = breaker.engage("rate_circuit_break", box["trip"])
+        LOG.error("RATE_CIRCUIT_BREAK %s", box["trip"])
+        raise RateCircuitBreakError(
+            "action rate circuit breaker tripped (AI loop suspected); "
+            "service force-frozen - release via POST /api/ghost/"
+            "emergency_stop/release after review",
+            frozen=True, frozen_at=frozen.get("frozen_at"),
+            frozen_reason="rate_circuit_break", **box["trip"])
+    if "e" in box:
+        raise box["e"]
+    return box["r"]
 
 
 def _resolve_input_target(action: str, want_hwnd: Optional[int],
@@ -393,10 +518,14 @@ def _gate_target_window(action: str, caps: Optional[Dict[str, Any]],
                         target_hwnd: Optional[int], monitor: int,
                         fmt: str, quality: int, label: str,
                         before_path: Optional[str]) -> None:
-    """锁内门禁：target_hwnd 过窗口黑名单 + 能力白名单，命中即 403（带审计截图）。"""
+    """锁内门禁：UAC FATAL → 窗口黑名单 → 能力白名单，命中即拒（带审计截图）。"""
     if not target_hwnd:
         return
     info = safety_gate.window_info(target_hwnd)
+    # v0.7.2 UAC 提权弹窗：FATAL 级，先于普通黑名单（锁内实时解析同样覆盖）
+    uac_reason = safety_gate.uac_fatal_reason(info)
+    if uac_reason:
+        _raise_fatal_uac(uac_reason, info, label=label)
     reason = safety_gate.redline_window(info)
     if reason:
         after_img, _ = screen_mss.grab(monitor)
@@ -431,8 +560,14 @@ def _run_locked_action(action: str, xi: Optional[int], yi: Optional[int],
                        trajectory: Optional[List[List[int]]] = None,
                        trajectory_t: Optional[List[int]] = None,
                        scroll_dy: Optional[int] = None,
-                       scroll_smooth: bool = False) -> Dict[str, Any]:
+                       scroll_smooth: bool = False,
+                       abort: Optional[threading.Event] = None) -> Dict[str, Any]:
     t0 = time.perf_counter()
+    # v0.7.2 硬超时中止点：请求线程已放弃本动作——此刻尚未产生任何输入，直接退出
+    if abort is not None and abort.is_set():
+        raise ActionTimeoutError(
+            "request timed out before execution; aborted, no input sent",
+            phase="aborted", released=True, frozen=True)
     before_path: Optional[str] = None
     after_path: Optional[str] = None
     origin: Dict[str, int] = {"left": 0, "top": 0}
@@ -486,6 +621,10 @@ def _run_locked_action(action: str, xi: Optional[int], yi: Optional[int],
 
         # 移动 + 漂移校验（type 前也必须把光标移到 (x,y) 并校验）
         if xi is not None and yi is not None:
+            if abort is not None and abort.is_set():
+                raise ActionTimeoutError(
+                    "action aborted before physical move (hard timeout)",
+                    phase="mid_action", released=True, frozen=True)
             backend.move_to(xi, yi)
             actual = backend.position()
             drift = max(abs(actual[0] - xi), abs(actual[1] - yi))
@@ -546,10 +685,26 @@ def _run_locked_action(action: str, xi: Optional[int], yi: Optional[int],
                             before_screenshot_path=before_path,
                             after_screenshot_path=after_path)
             drag_t0 = time.perf_counter()
+            # 轨迹节奏完全由 points_t 自控；pyautogui 全局 PAUSE(0.05s) 逐点
+            # 施加会把 6s 拖拽拖成 ~25s（v0.7.2 实测），循环期间归零、出环即还原。
+            prev_pause = getattr(backend.pyautogui, "PAUSE", 0)
+            backend.pyautogui.PAUSE = 0
             backend.mouse_down("left")
             try:
                 for i in range(1, len(trajectory)):
                     px, py = trajectory[i]
+                    if abort is not None and abort.is_set():
+                        # v0.7.2 硬超时中止：立即停轨，finally 负责释放鼠标键
+                        after_img, _ = screen_mss.grab(monitor)
+                        after_path = str(screen_mss.save_audit(
+                            after_img, "after", fmt, quality))
+                        raise ActionTimeoutError(
+                            "drag aborted mid-trajectory (hard timeout); "
+                            "pointer button released",
+                            phase="mid_action", released=True, frozen=True,
+                            point=i,
+                            before_screenshot_path=before_path,
+                            after_screenshot_path=after_path)
                     if _in_corner((px, py)):
                         after_img, _ = screen_mss.grab(monitor)
                         after_path = str(screen_mss.save_audit(after_img, "after", fmt, quality))
@@ -574,6 +729,7 @@ def _run_locked_action(action: str, xi: Optional[int], yi: Optional[int],
                             time.sleep(min(ahead, 0.25))
             finally:
                 backend.release_pointer_buttons()  # 绝不把"按住"状态泄漏到系统
+                backend.pyautogui.PAUSE = prev_pause
         elif action == "scroll":
             # 滚轮（v0.6 M1）：smooth 时分片滚动；带 hwnd 的归属门禁已在上方复核
             if scroll_dy is None:
@@ -587,6 +743,11 @@ def _run_locked_action(action: str, xi: Optional[int], yi: Optional[int],
             else:
                 parts = [scroll_dy]
             for i, part in enumerate(parts):
+                if abort is not None and abort.is_set():
+                    raise ActionTimeoutError(
+                        "scroll aborted mid-sequence (hard timeout)",
+                        phase="mid_action", released=True, frozen=True,
+                        chunks_done=i)
                 if part:
                     backend.scroll(part)
                 if len(parts) > 1 and i < len(parts) - 1:

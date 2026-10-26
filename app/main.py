@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 import logging.handlers
+import os
 from contextlib import asynccontextmanager
 from typing import Awaitable, Callable, Optional
 
@@ -43,6 +44,7 @@ def _setup_logging() -> logging.Logger:
 
 
 _FILE_HANDLER: Optional[logging.Handler] = None
+_STACK_FH = None  # v0.7.2 栈转储文件句柄（GHOST_STACKDUMP_INTERVAL 门控）
 
 
 LOG = _setup_logging()
@@ -64,6 +66,43 @@ def _setup_access_log() -> None:
         access.addHandler(handler)
 
 
+def _spawn_watchdog() -> Optional[int]:
+    """v0.7.2 独立看门狗：监控本进程 PID，被强杀后由它物理释放修饰键。
+
+    与 Ghost 无共享句柄、DETACHED 独立进程——任务管理器连我们一起杀也杀不到它。
+    拉起失败只告警不阻断服务（HTTP/热键急停仍是主通道）。
+    """
+    if not config.WATCHDOG_ENABLED:
+        return None
+    try:
+        import os
+        import subprocess
+        import sys
+        script = str(config.BASE_DIR / "scripts" / "ghost_watchdog.py")
+        try:
+            import psutil
+            ctime = str(psutil.Process().create_time())
+        except Exception:  # noqa: BLE001
+            ctime = "0"
+        proc = subprocess.Popen(
+            [sys.executable, script, "--pid", str(os.getpid()),
+             "--ctime", ctime],
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        global _WATCHDOG_PROC
+        _WATCHDOG_PROC = proc  # 持有引用，防 Popen 析构警告
+        LOG.info("watchdog spawned: pid=%s watching pid=%s",
+                 proc.pid, os.getpid())
+        return proc.pid
+    except Exception as exc:  # noqa: BLE001
+        LOG.warning("watchdog spawn failed (non-fatal): %s", exc)
+        return None
+
+
+_WATCHDOG_PROC = None
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     # v0.7.1 单实例门禁（防御层）：run.py 已在进程入口抢占互斥体；此处兜住
@@ -72,6 +111,18 @@ async def lifespan(_: FastAPI):
         raise RuntimeError(
             "another moray-ghost instance is already running "
             "(single-instance mutex " + single_instance.MUTEX_NAME + " held)")
+    _spawn_watchdog()          # v0.7.2 越早越好：进程强杀后的物理自救通道
+    # v0.7.2 挂死取证（env 门控，运维可开）：周期性全进程线程栈转储到
+    # logs/stacks.log——任何"卡死"都能事后定位到确切调用栈。
+    dump_iv = float(os.getenv("GHOST_STACKDUMP_INTERVAL", "0") or 0)
+    if dump_iv > 0:
+        import faulthandler
+        global _STACK_FH
+        _STACK_FH = open(config.LOG_DIR / "stacks.log", "a",
+                         encoding="utf-8", errors="replace")
+        faulthandler.dump_traceback_later(dump_iv, repeat=True,
+                                          file=_STACK_FH)
+        LOG.info("stackdump enabled: every %ss -> logs/stacks.log", dump_iv)
     macro_store.init_db()
     backend.release_all_modifiers()  # 启动时清一次可能残留的修饰键（进程曾中途被杀等）
     task_queue.start_dispatcher()    # v0.5：任务 FIFO 单工作线程（串行派发）
