@@ -19,7 +19,8 @@ from app.core import screen_mss  # 先于其他 app 模块：尽早设置 DPI
 from app.core import (auth, authz, audit_sink, backend, config, estop,
                       janitor, macro_store, single_instance, task_queue)
 from app.api import browser_routes, dashboard_routes, environment_routes
-from app.api import macro_routes, routes, task_routes, window_routes
+from app.api import macro_routes, routes, task_routes, vl_routes
+from app.api import window_routes
 
 config.ensure_dirs()
 config.ensure_token()
@@ -200,3 +201,4 @@ app.include_router(task_routes.router)
 app.include_router(browser_routes.router)
 app.include_router(dashboard_routes.router)
 app.include_router(dashboard_routes.api_router)
+app.include_router(vl_routes.router)   # v0.8.0 /vl/analyze（需 token，只读）

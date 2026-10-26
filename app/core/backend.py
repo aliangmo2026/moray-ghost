@@ -134,7 +134,15 @@ class PyAutoGUIBackend(InputBackend):
         text = str(text)
         try:
             if all(ord(ch) < 128 for ch in text):
-                pyautogui.write(text, interval=interval)
+                # v0.8.0：本机中文 IME 会把 pyautogui.write 的注入字母处理成
+                # VK_PROCESSKEY(229)——目标应用收到 keysym='??'、char=''（实证
+                # Tk 等按字符翻译的控件完全收不到文本）。keyboard.write 送出规范
+                # VK+扫描码 → 真实字符（实证 char='a'）。失败回落 pyautogui.write。
+                try:
+                    import keyboard as _keyboard
+                    _keyboard.write(text, delay=interval)
+                except Exception:
+                    pyautogui.write(text, interval=interval)
             else:
                 # 非 ASCII（中文/emoji）：pyautogui.write 不支持，走剪贴板粘贴
                 _paste_text(text)

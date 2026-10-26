@@ -12,7 +12,12 @@ psutil==7.2.2  # 压测/诊断（scripts/test_stress.py）
 opencv-python-headless==5.0.0.93  # 宏锚点模板匹配（macro_matcher）；服务无 GUI，用 headless（实测与完整版同速）
 pywin32==312  # 窗口定位（window_locator：枚举/GetWindowRect/稳定性等待）
 playwright==1.64.1  # CDP 浏览器接管（browser_driver：connect_over_cdp 连本地调试端口；不下载捆绑浏览器）
-keyboard==0.13.5  # v0.7.1 全局急停热键（estop：Ctrl+Alt+Q 系统级钩子）
+keyboard==0.13.5  # v0.7.1 全局急停热键（estop：Ctrl+Alt+Q）；v0.8.0 ASCII 逐键注入（IME 免疫）
+# ---- v0.8.0 MCP 多模态感知底座 ----
+mcp==2.3.0  # 官方 MCP Python SDK（mcp_server.py Stdio 协议面）
+rapidocr-onnxruntime==1.4.4  # 轻量级本地视觉模型（PP-OCR ONNX，ocr 后端；--no-deps 安装以保留 opencv-python-headless，cv2 共用）
+onnxruntime==1.31.0  # ocr 后端推理引擎（rapidocr 的运行时依赖，显式锁定）
+llama-cpp-python==0.3.36  # 真实 VL 后端（llama）；Windows 安装需 CPU wheel 索引：pip install llama-cpp-python --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu（源码编译需短 TMP 绕 260 字符路径 + MSVC）
 # 可选（v0.7 post_assert ocr_text_present）：本机未装 tesseract 时该断言如实报
 # POST_ASSERT_UNVERIFIABLE 挂起；字样校验可改用 anchor_present（cv2 模板，零新增依赖）
 # pytesseract==0.3.10

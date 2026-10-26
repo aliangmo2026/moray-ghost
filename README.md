@@ -1,12 +1,12 @@
 # moray-ghost
 
-![version](https://img.shields.io/badge/version-0.7.2-blue)
+![version](https://img.shields.io/badge/version-0.8.0-blue)
 ![python](https://img.shields.io/badge/python-3.12.2-3776AB?logo=python&logoColor=white)
 ![platform](https://img.shields.io/badge/platform-Windows%2010%20%2F%2011-0078D6)
-![regression](https://img.shields.io/badge/regression-314%20checks%20passed-brightgreen)
+![regression](https://img.shields.io/badge/regression-334%20checks%20passed-brightgreen)
 ![audit](https://img.shields.io/badge/audit-JSONL%20%2B%20token%20fingerprint-lightgrey)
 
-Windows 桌面自动化本地服务（v0.7.2）：**mss 极速截图 + 授权式 pyautogui 动作 + 宏录制/安全重放 + 任务生命周期 + 环境感知 + 视觉反哺 Heal + 多 Agent 任务队列 + Web 监控面板 + 官方 Python SDK + v0.7 绝对防御（三道门禁 + 能力令牌 + 后置断言）+ v0.7.1 企业级安全（单实例互斥 / 全局急停热键 / 生产输入源过滤 / JSONL 审计 / 异常清道夫）+ v0.7.2 极限安全（UAC 提权免疫 / 独立看门狗 / 频率熔断 / 硬超时 / 健康解耦）**。
+Windows 桌面自动化本地服务（v0.8.0）：**mss 极速截图 + 授权式 pyautogui 动作 + 宏录制/安全重放 + 任务生命周期 + 环境感知 + 视觉反哺 Heal + 多 Agent 任务队列 + Web 监控面板 + 官方 Python SDK + MCP Server（Stdio，任意 AI Agent 即插即用）+ 本地 VL 感知（rapidocr / llama-cpp GGUF）+ v0.7 绝对防御 + v0.7.1 企业级安全 + v0.7.2 极限安全**。
 
 只监听 `127.0.0.1:8030`；绝不触碰 `D:\MoRay`（主仓）。
 
@@ -58,6 +58,24 @@ Windows 桌面自动化本地服务（v0.7.2）：**mss 极速截图 + 授权式
 > stdout/stderr 从 FD 层置非阻塞，父进程不读日志管道时宁可丢日志也绝不卡死
 > 服务（栈转储实证修复的整机假死死锁）；⑦ `GHOST_STACKDUMP_INTERVAL` 周期
 > 线程栈取证。验收：`scripts/test_v072_extreme.py` **40/40**。
+>
+> **⚠️ v0.8.0 MCP 多模态感知底座（自带眼睛的通用外设）**：
+> ① **VL Driver**（`app/core/vl_driver.py`）——截图/窗口 → 控件 JSON
+> （文本/类型/物理像素 bbox/中心），四后端策略：`ocr`（rapidocr PP-OCR ONNX，
+> 轻量级本地视觉模型，无权重管理即装即用）/ `native`（win32 枚举，零依赖）/
+> `llama`（llama-cpp-python + `GHOST_VL_MODEL_PATH` GGUF 真模型，如
+> Qwen2-VL-2B）/ `mock`（夹具）；`auto` 按 llama→ocr→native 如实降级并回显
+> 真实出处；匹配铁律 0 命中 404、多命中 409 绝不猜；服务端收口
+> `POST /api/ghost/vl/analyze`（需 token，走单一 capture 线程与进程内单例模型）。
+> ② **MCP Server**（根目录 `mcp_server.py`，官方 `mcp` SDK Stdio）——4 个标准
+> Tools：`analyze_screen` / `click_element` / `type_text` / `execute_task`；
+> **路由分流**：URL 或 Edge/Chrome 窗口 → CDP（by=text），原生 → VL 定位中心
+> → 安全管道点击；身份与白名单启动时从环境注入（`GHOST_TOKEN` /
+> `GHOST_AGENT_ID` / `GHOST_CAPABILITIES`），**tool 参数改不宽白名单**，
+> 一切经 HTTP+Token 回服务端——令牌/能力令牌/黑名单/熔断/硬超时/审计 100% 生效。
+> ③ **打字注入升级**：本机中文 IME 会把 `pyautogui.write` 的字母打成
+> VK_PROCESSKEY（实证），ASCII 逐键注入切换为 `keyboard.write`（规范 VK+扫描码，
+> 失败回落 pyautogui）。验收：`scripts/test_v08_mcp_vl.py` **20/20**。
 
 ## ⚠️ 测试纪律红线（所有脚本强制执行，违反即事故）
 
@@ -215,6 +233,8 @@ HTTP 层   FastAPI @ 127.0.0.1:8030，全部接口挂 /api/ghost/ 前缀
 .venv\Scripts\python scripts\smoke.py --failsafe   # 追加：Fail-Safe 409 现场测试
 .venv\Scripts\python scripts\test_v071_security.py # v0.7.1 安全验收（互斥/热键/审计/生产过滤）
 .venv\Scripts\python scripts\test_v072_extreme.py # v0.7.2 极限安全验收（UAC/看门狗/熔断/硬超时）
+.venv\Scripts\python scripts\test_v08_mcp_vl.py   # v0.8.0 MCP+VL 验收（Stdio/感知/点击/门禁透传）
+.venv\Scripts\python mcp_server.py                # 以 Stdio 方式作为 MCP Server 供 Agent 拉起
 ```
 
 冒烟脚本会把鼠标甩到屏幕左上角再还原（`--failsafe` 时）；`--no-click` 可跳过真实点击。
@@ -405,8 +425,13 @@ app/core/audit_sink.py      v0.7.1 结构化审计落盘（data/ghost_audit.json
 app/core/janitor.py         v0.7.1 异常清道夫（失败/取消释放按键鼠标 + 线程盘点）
 app/core/estop.py           v0.7.1 全局急停热键 Ctrl+Alt+Q（释放输入 → 审计 → os._exit）
 app/core/breaker.py         v0.7.2 动作频率熔断（窗口/连续双阈值 → 429 + 强制冻结）
+app/core/vl_driver.py       v0.8.0 VL 感知（native/ocr/llama/mock 四后端 + 路由分流 + 匹配铁律）
+app/api/vl_routes.py        v0.8.0 POST /vl/analyze（服务端跑感知，需 token，只读）
+mcp_server.py               v0.8.0 MCP Server（官方 SDK Stdio；4 Tools；身份/白名单环境注入）
 scripts/ghost_watchdog.py   v0.7.2 独立看门狗（主进程被强杀后 keybd_event 释放修饰键）
 scripts/test_v072_extreme.py  v0.7.2 极限安全验收：UAC/看门狗/熔断/硬超时（40 checks）
+scripts/test_v08_mcp_vl.py  v0.8.0 MCP+VL 验收：Stdio/感知/点击/打字/任务/门禁（20 checks）
+docs/v0.8-design.md         v0.8.0 vl_driver + mcp_server 设计结构（与实现同步）
 app/core/macro_store.py     SQLite 读写 + schema 初始化
 app/core/macro_runner.py    重放骨架（v0.3 落地）
 sdk/                        官方 Python SDK（GhostClient，仅依赖 requests）

@@ -17,7 +17,7 @@ ENV_PATH = BASE_DIR / ".env"
 load_dotenv(ENV_PATH)
 
 SERVICE = "moray-ghost"
-VERSION = "0.7.2"
+VERSION = "0.8.0"
 
 HOST = os.getenv("GHOST_HOST", "127.0.0.1")
 PORT = int(os.getenv("GHOST_PORT", "8030"))
@@ -48,6 +48,17 @@ RATE_LIMIT_CONSECUTIVE = int(os.getenv("GHOST_RATE_LIMIT_CONSECUTIVE", "50"))
 # 独立看门狗（v0.7.2）：主进程被强杀后释放系统修饰键（防按键卡死）。
 WATCHDOG_ENABLED = os.getenv("GHOST_WATCHDOG", "true").strip().lower() in (
     "1", "true", "yes")
+
+# ---- v0.8.0 MCP 多模态感知（VL Driver） ------------------------------------
+
+# 感知后端：auto（默认：llama 可用→llama，否则 ocr，否则 native）|
+# native（win32 几何枚举）| ocr（rapidocr 轻量本地视觉模型）|
+# llama（llama-cpp-python + GGUF）| mock（夹具）。
+VL_BACKEND = os.getenv("GHOST_VL_BACKEND", "auto").strip().lower() or "auto"
+# 真实 VL 模型权重（GGUF，如 Qwen2-VL-2B / MiniCPM-V）；空 = 未接入（auto 降级）。
+VL_MODEL_PATH = os.getenv("GHOST_VL_MODEL_PATH", "").strip()
+# mock 后端夹具 JSON：[{"text","type","bbox":[x,y,w,h]}]
+VL_MOCK_JSON = os.getenv("GHOST_VL_MOCK_JSON", "").strip()
 
 # CDP 浏览器接管（v0.6 M2）：仅允许 loopback 调用点（browser_driver 使用前再校验一次）
 BROWSER_CDP_URL = os.getenv("GHOST_BROWSER_CDP_URL", "http://127.0.0.1:9222").strip()
