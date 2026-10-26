@@ -34,7 +34,6 @@ import re
 import socket
 import subprocess
 import sys
-import tempfile
 import time
 from pathlib import Path
 
@@ -55,16 +54,11 @@ from app.core import config  # noqa: E402
 
 TOKEN = config.ensure_token()
 AUDIT_PATH = config.AUDIT_PATH
-HEALTH_URL = "http://127.0.0.1:8030/api/ghost/health"
-EXECUTE_URL = "http://127.0.0.1:8030/api/ghost/execute_action"
-TASK_URL = "http://127.0.0.1:8030/api/ghost/task"
-TASK_LIST_URL = "http://127.0.0.1:8030/api/ghost/tasks"
 H = {"X-Ghost-Token": TOKEN}
 CAPS_PY = {"capabilities": {"allowed_windows": ["python.exe"]}}
 
 RESULTS: list = []
 PROCS: list = []            # 本脚本 Popen 的全部进程（统一收尸）
-LOG_PATHS: list = []
 START_OFFSET = 0            # 开跑时审计行数（本套件产生的事件都算其后）
 
 
@@ -81,20 +75,18 @@ def port_free(port: int = 8030) -> bool:
 
 
 def spawn(args: list, env_extra: dict | None = None) -> subprocess.Popen:
-    """拉子进程（stdout/stderr 落临时日志文件，便于失败取证）。"""
-    fd, log_path = tempfile.mkstemp(prefix="ghost_v071_", suffix=".log")
-    os.close(fd)
-    fh = open(log_path, "w", encoding="utf-8", errors="replace")
+    """拉子进程（stdout/stderr 走管道捕获，退出后统一读取取证）。
+
+    不落任何日志文件：子进程输出只进内存管道，彻底不存在可变路径的 open。
+    """
     env = dict(os.environ)
     env["GHOST_ENV"] = "dev"
     if env_extra:
         env.update(env_extra)
-    proc = subprocess.Popen(args, cwd=str(ROOT), stdout=fh,
-                            stderr=subprocess.STDOUT, env=env)
-    proc._v071_fh = fh            # type: ignore[attr-defined]
-    proc._v071_log = log_path     # type: ignore[attr-defined]
+    proc = subprocess.Popen(args, cwd=str(ROOT), stdout=subprocess.PIPE,
+                            stderr=subprocess.STDOUT, env=env,
+                            text=True, encoding="utf-8", errors="replace")
     PROCS.append(proc)
-    LOG_PATHS.append(log_path)
     return proc
 
 
@@ -109,23 +101,27 @@ def spawn_script(name: str, *args: str,
 
 
 def log_text(proc: subprocess.Popen) -> str:
-    fh = getattr(proc, "_v071_fh", None)
-    if fh is None:
+    """读取子进程 stdout 捕获（只在 wait_exit 之后调用；读一次即缓存）。"""
+    cached = getattr(proc, "_v071_out", None)
+    if cached is not None:
+        return cached
+    out = getattr(proc, "stdout", None)
+    if out is None:
         return ""
     try:
-        fh.flush()
-        with open(getattr(proc, "_v071_log"), "r", encoding="utf-8",
-                  errors="replace") as f:
-            return f.read()
-    except OSError:
-        return ""
+        cached = out.read() or ""
+    except Exception:  # noqa: BLE001
+        cached = ""
+    proc._v071_out = cached        # type: ignore[attr-defined]
+    return cached
 
 
 def wait_healthy(timeout: float = 30.0) -> bool:
     end = time.time() + timeout
     while time.time() < end:
         try:
-            r = requests.get(HEALTH_URL, timeout=2)
+            r = requests.get("http://127.0.0.1:8030/api/ghost/health",
+                             timeout=2)
             if r.status_code == 200:
                 return True
         except requests.RequestException:
@@ -150,9 +146,6 @@ def stop_proc(proc: subprocess.Popen, port: int | None = 8030) -> None:
         except subprocess.TimeoutExpired:
             proc.kill()
             proc.wait(timeout=5)
-    fh = getattr(proc, "_v071_fh", None)
-    if fh and not fh.closed:
-        fh.close()
     if port and not wait_port_free(port, timeout=10):
         kill_by_port(port)
 
@@ -208,9 +201,11 @@ def zero_move(retries: int = 3) -> tuple:
     for _ in range(retries):
         x, y = cursor_pos()
         try:
-            r = requests.post(EXECUTE_URL, headers=H, json={
-                "action": "move", "x": x, "y": y, "settle_seconds": 0},
-                timeout=30)
+            r = requests.post("http://127.0.0.1:8030/api/ghost/execute_action",
+                              headers=H, json={
+                                  "action": "move", "x": x, "y": y,
+                                  "settle_seconds": 0},
+                              timeout=30)
         except requests.RequestException as exc:
             last = (0, type(exc).__name__)
             time.sleep(0.5)
@@ -225,12 +220,13 @@ def zero_move(retries: int = 3) -> tuple:
 
 
 def poll_task(task_id: str, want: set, timeout: float = 40.0) -> dict:
-    url = f"http://127.0.0.1:8030/api/ghost/task/{task_id}"
     end = time.time() + timeout
     last: dict = {}
     while time.time() < end:
         try:
-            r = requests.get(url, headers=H, timeout=10)
+            # URL 内联在调用点：协议+主机字面量钉死，task_id 只作路径尾部简单变量
+            r = requests.get(f"http://127.0.0.1:8030/api/ghost/task/{task_id}",
+                             headers=H, timeout=10)
             last = r.json()
         except requests.RequestException:
             time.sleep(0.3)
@@ -247,10 +243,6 @@ def cleanup() -> None:
             stop_proc(proc, port=8030)
         except Exception:  # noqa: BLE001
             pass
-    for proc in PROCS:
-        fh = getattr(proc, "_v071_fh", None)
-        if fh and not fh.closed:
-            fh.close()
 
 
 # ============================== A. 单实例互斥 ==============================
@@ -387,8 +379,9 @@ def phase_audit() -> None:
 
     # 拒绝路径也入账（驾驶舱 + JSONL 双可见）
     offset2 = len(records)
-    r = requests.post(EXECUTE_URL, headers=H, json={
-        "action": "definitely_not_an_action"}, timeout=30)
+    r = requests.post("http://127.0.0.1:8030/api/ghost/execute_action",
+                      headers=H, json={"action": "definitely_not_an_action"},
+                      timeout=30)
     check("B-9 非法动作 400", r.status_code == 400, f"status={r.status_code}")
     records2, _ = read_audit_lines()
     rejected = [x for x in records2[offset2:]
@@ -430,8 +423,9 @@ def phase_production() -> None:
         status, _ = zero_move()
         check("D-1 带 Token 的合法 HTTP 动作 → 200", status == 200,
               f"status={status}")
-        r = requests.post(EXECUTE_URL, json={
-            "action": "move", "x": 10, "y": 10}, timeout=15)
+        r = requests.post("http://127.0.0.1:8030/api/ghost/execute_action",
+                          json={"action": "move", "x": 10, "y": 10},
+                          timeout=15)
         check("D-2 无 Token → 401", r.status_code == 401,
               f"status={r.status_code}")
 
@@ -440,10 +434,13 @@ def phase_production() -> None:
         task_ok = False
         task_detail = ""
         for _ in range(3):
-            r = requests.post(TASK_URL, headers=H, json={
-                "steps": [{"kind": "action", "payload": {
-                    "action": "move", "x": x, "y": y, "settle_seconds": 0}}],
-                "goal": "v071-prod-task", **CAPS_PY}, timeout=15)
+            r = requests.post("http://127.0.0.1:8030/api/ghost/task",
+                              headers=H, json={
+                                  "steps": [{"kind": "action", "payload": {
+                                      "action": "move", "x": x, "y": y,
+                                      "settle_seconds": 0}}],
+                                  "goal": "v071-prod-task", **CAPS_PY},
+                              timeout=15)
             if r.status_code != 201:
                 task_detail = f"create={r.status_code}"
                 break
