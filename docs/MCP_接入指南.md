@@ -105,10 +105,12 @@ GHOST_VL_MODEL_PATH_7B=E:\moray-ghost\models\Qwen2-VL-7B-Instruct-Q4_K_M.gguf
 GHOST_VL_MMPROJ_PATH_7B=E:\moray-ghost\models\mmproj-Qwen2-VL-7B-Instruct-f16.gguf
 ```
 
-**混合图标定位**（v0.9）：`GHOST_VL_HYBRID=auto` 默认只对 7B 档启用——
+**混合图标定位**（v0.9，实验性）：`GHOST_VL_HYBRID=auto` 仅对 7B 档启用——
 CV（Otsu + 连通域）先粗筛小图标，生成带编号的 contact sheet，再让 VL 只回答
 “几号是目标”；`GHOST_VL_HYBRID_MIN_CONF`（默认 0.55）以下直接 404，绝不
-把低置信度选号变成误点。2B 档默认关闭（实测 2B 对直角/圆角矩形语义不可靠）。
+把低置信度选号变成误点。**2B/7B 实测都会把直角矩形选成圆角矩形或菱形
+（7B confidence 0.99），且点击后拖拽可能 0 像素**——因此示例 `.env` 默认
+`GHOST_VL_HYBRID=0`；只有在做实验/接入 CV 形状校验时才改 `1`。
 
 重启 Ghost 服务后 `analyze_screen` 的 `backend` 字段应变成 `llama`（首次调用
 加载模型约 5–20s，之后进程内常驻）。
@@ -133,7 +135,12 @@ CV（Otsu + 连通域）先粗筛小图标，生成带编号的 contact sheet，
   `auto` 模式会如实降级 OCR——2B 不适合全屏密集 UI 的通用列表。
   显存峰值 5157MiB（含 Ollama），Ghost 服务 RSS ~1.8GB；无 OOM/掉卡。
 - 7B Q4_K_M + mmproj ≈ 6.0GB：8GB 卡需先停 Ollama/其他 GPU 程序；
-  `GHOST_VL_MODEL_PROFILE=7b` 后混合定位 `auto` 自动启用。
+  24/28 层 + mmproj 上 GPU 实测：靶窗通用 TTFT 6.60s/总 12.79s，定向
+  TTFT 2.17s/总 5.43s，中心误差 1px；显存峰值 7298MiB（剩 513MiB）。
+  但**无文字形状仍不可靠**：「矩形」被选成圆角矩形 #11（confidence 0.99），
+  「直角矩形」选成 #27（0.99）；画图测试 9/11（选中后拖拽 0 像素）。
+  7B 档当前只适合文本/大控件；混合定位默认 0，下一步需要 CV 形状校验
+  （角点/矩形度）或更强模型。
 - 回滚 CPU：`pip install llama-cpp-python==0.3.36 --extra-index-url
   https://abetlen.github.io/llama-cpp-python/whl/cpu`。
 

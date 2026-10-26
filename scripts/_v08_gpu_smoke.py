@@ -19,8 +19,10 @@ sys.path.insert(0, str(ROOT))
 
 from PIL import Image  # noqa: E402
 
-MODEL = ROOT / "models" / "Qwen2-VL-2B-Instruct-Q4_K_M.gguf"
-MMPROJ = ROOT / "models" / "mmproj-Qwen2-VL-2B-Instruct-f16.gguf"
+from app.core import config  # noqa: E402
+
+MODEL = Path(config.VL_MODEL_PATH)
+MMPROJ = Path(config.VL_MMPROJ_PATH)
 IMG = ROOT / "data" / "screenshots" / "_target_crop.png"
 
 HEAD = ("You are a GUI visual grounding model. Locate the control whose "
@@ -82,7 +84,7 @@ def main() -> int:
     t0 = time.perf_counter()
     llm = Llama(model_path=str(MODEL), chat_handler=handler, n_ctx=4096,
                 n_threads=max(4, (os.cpu_count() or 8) // 2), n_batch=256,
-                n_gpu_layers=-1, verbose=False)
+                n_gpu_layers=config.VL_N_GPU_LAYERS, verbose=False)
     print("model loaded %.2fs" % (time.perf_counter() - t0), flush=True)
     print("gpu after load:", llama_cpp.llama_supports_gpu_offload(),
           gpu_mem(), flush=True)

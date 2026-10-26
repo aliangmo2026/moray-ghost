@@ -290,6 +290,9 @@ async def scenario(paint_hwnd: int, canvas: list) -> None:
                     "text": cand, "match": "contains"}))
                 if got.get("ok") is True and got.get("http_status") == 200:
                     shape_used = cand
+                    print("  shape click body: "
+                          + json.dumps(got, ensure_ascii=False)[:600],
+                          flush=True)
                     break
             print(f"  (shape tool: {shape_used or '默认铅笔'})", flush=True)
 
