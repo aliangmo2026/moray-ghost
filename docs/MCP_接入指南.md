@@ -92,22 +92,50 @@ E:\moray-ghost\models\mmproj-Qwen2-VL-2B-Instruct-f16.gguf
 `E:\moray-ghost\.env` 追加（models/ 与 *.gguf 已 gitignore，权重永不入库）：
 
 ```ini
-GHOST_VL_MODEL_PATH=E:\moray-ghost\models\Qwen2-VL-2B-Instruct-Q4_K_M.gguf
-GHOST_VL_MMPROJ_PATH=E:\moray-ghost\models\mmproj-Qwen2-VL-2B-Instruct-f16.gguf
+GHOST_VL_MODEL_PROFILE=2b
+GHOST_VL_MODEL_PATH_2B=E:\moray-ghost\models\Qwen2-VL-2B-Instruct-Q4_K_M.gguf
+GHOST_VL_MMPROJ_PATH_2B=E:\moray-ghost\models\mmproj-Qwen2-VL-2B-Instruct-f16.gguf
 ```
+
+7B 下载完成后，只改档位与对应路径（文件未就位时 `auto` 会如实降级到 OCR）：
+
+```ini
+GHOST_VL_MODEL_PROFILE=7b
+GHOST_VL_MODEL_PATH_7B=E:\moray-ghost\models\Qwen2-VL-7B-Instruct-Q4_K_M.gguf
+GHOST_VL_MMPROJ_PATH_7B=E:\moray-ghost\models\mmproj-Qwen2-VL-7B-Instruct-f16.gguf
+```
+
+**混合图标定位**（v0.9）：`GHOST_VL_HYBRID=auto` 默认只对 7B 档启用——
+CV（Otsu + 连通域）先粗筛小图标，生成带编号的 contact sheet，再让 VL 只回答
+“几号是目标”；`GHOST_VL_HYBRID_MIN_CONF`（默认 0.55）以下直接 404，绝不
+把低置信度选号变成误点。2B 档默认关闭（实测 2B 对直角/圆角矩形语义不可靠）。
 
 重启 Ghost 服务后 `analyze_screen` 的 `backend` 字段应变成 `llama`（首次调用
 加载模型约 5–20s，之后进程内常驻）。
 
-### 4.3 RTX 5060 8GB 说明
+### 4.3 RTX 5060 8GB / CUDA 12.8 实测
 
-- 2B Q4_K_M + mmproj ≈ 2.2GB 权重，8GB 显存轻松容纳；
-- 当前安装的 llama-cpp-python 是 **CPU 轮子**（装法见 requirements 注释）——
-  CPU 跑 2B 做单次 UI 解析完全够用；要吃显存需换 CUDA 轮子
-  （`pip install llama-cpp-python --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/<cu版本>`
-  ，Blackwell 架构需较新 CUDA 构建；装好后 `GHOST_VL_N_GPU_LAYERS=-1` 自动全量
-  offload，无需改码）；
-- 7B Q4_K_M + mmproj ≈ 6.0GB：8GB 可用，建议 CUDA 轮子。
+- 已切 CUDA：`llama-cpp-python 0.4.5+cu128`（社区 wheel，SHA256
+  `b894e5a0…`）+ `nvidia-cuda-runtime-cu12==12.8.90` +
+  `nvidia-cublas-cu12==12.8.5.5` + `nvidia-cuda-nvrtc-cu12==12.8.93`
+  提供 `cudart64_12.dll`/`cublas64_12.dll`（wheel 只带 `ggml-cuda.dll`），
+  并把 `numpy` 对齐到 2.3.2（0.4.5 元数据上限）。安装见
+  `requirements-gpu.txt`。`pip check` 仍会报
+  `rapidocr → opencv-python` 缺失——这是项目共用
+  `opencv-python-headless` 的已知刻意配置，不是真缺。
+- **0.4.5 的 CUDA 后端在首次构造 `Llama` 时才注册**；驱动用 vocab-only
+  探针预热后端，`/health` 的 `vl.gpu_offload` 才回 `true`。0.4.5 的 mmproj
+  参数名是 `mmproj_path`（0.3.36 是 `clip_model_path`），驱动两版都兼容；
+  `GHOST_VL_IMAGE_MIN_TOKENS=1024` 对应 Qwen-VL grounding 建议。
+- 2B 实测（Ollama 同时占用显卡）：靶窗 582x356 / 1024x626 定向定位
+  **TTFT 0.68–2.65s、总 2.8–5.1s**，按钮中心误差 ≤1px；全屏
+  2560x1600→1024x616 的“列全控件”会被 256 token 截断（20–32s），
+  `auto` 模式会如实降级 OCR——2B 不适合全屏密集 UI 的通用列表。
+  显存峰值 5157MiB（含 Ollama），Ghost 服务 RSS ~1.8GB；无 OOM/掉卡。
+- 7B Q4_K_M + mmproj ≈ 6.0GB：8GB 卡需先停 Ollama/其他 GPU 程序；
+  `GHOST_VL_MODEL_PROFILE=7b` 后混合定位 `auto` 自动启用。
+- 回滚 CPU：`pip install llama-cpp-python==0.3.36 --extra-index-url
+  https://abetlen.github.io/llama-cpp-python/whl/cpu`。
 
 ## 5. 验证（不依赖任何客户端的自动化）
 

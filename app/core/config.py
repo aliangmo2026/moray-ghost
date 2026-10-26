@@ -17,7 +17,7 @@ ENV_PATH = BASE_DIR / ".env"
 load_dotenv(ENV_PATH)
 
 SERVICE = "moray-ghost"
-VERSION = "0.8.1"
+VERSION = "0.9.0"
 
 HOST = os.getenv("GHOST_HOST", "127.0.0.1")
 PORT = int(os.getenv("GHOST_PORT", "8030"))
@@ -55,12 +55,35 @@ WATCHDOG_ENABLED = os.getenv("GHOST_WATCHDOG", "true").strip().lower() in (
 # native（win32 几何枚举）| ocr（rapidocr 轻量本地视觉模型）|
 # llama（llama-cpp-python + GGUF）| mock（夹具）。
 VL_BACKEND = os.getenv("GHOST_VL_BACKEND", "auto").strip().lower() or "auto"
-# 真实 VL 模型权重（GGUF，如 Qwen2-VL-2B / MiniCPM-V）；空 = 未接入（auto 降级）。
-VL_MODEL_PATH = os.getenv("GHOST_VL_MODEL_PATH", "").strip()
+# 模型档位：2b（默认，当前已验证）/ 7b（下载完成后只改这一行）。
+# 路径按档位读取 GHOST_VL_MODEL_PATH_<PROFILE>；2b 档兼容旧的
+# GHOST_VL_MODEL_PATH（向后兼容）。
+VL_PROFILE = (os.getenv("GHOST_VL_MODEL_PROFILE", "2b").strip().lower()
+              or "2b")
+_VL_KEY = VL_PROFILE.upper().replace("-", "_")
+_VL_MODEL_SPECIFIC = os.getenv("GHOST_VL_MODEL_PATH_" + _VL_KEY, "").strip()
+_VL_MMPROJ_SPECIFIC = os.getenv("GHOST_VL_MMPROJ_PATH_" + _VL_KEY,
+                                "").strip()
+# 真实 VL 模型权重（GGUF，如 Qwen2-VL-2B/7B）；空 = 未接入（auto 降级）。
+VL_MODEL_PATH = _VL_MODEL_SPECIFIC or (
+    os.getenv("GHOST_VL_MODEL_PATH", "").strip()
+    if VL_PROFILE == "2b" else "")
 # 多模态投影器（mmproj GGUF，llama.cpp 视觉必需，与模型配套下载）；空=未配视觉。
-VL_MMPROJ_PATH = os.getenv("GHOST_VL_MMPROJ_PATH", "").strip()
+VL_MMPROJ_PATH = _VL_MMPROJ_SPECIFIC or (
+    os.getenv("GHOST_VL_MMPROJ_PATH", "").strip()
+    if VL_PROFILE == "2b" else "")
 # GPU offload 层数（-1=全部；CPU 版 llama-cpp 轮子忽略此值，装 CUDA 轮子后自动生效）。
 VL_N_GPU_LAYERS = int(os.getenv("GHOST_VL_N_GPU_LAYERS", "-1"))
+# 送模型的图像最长边（CPU 上视觉编码按像素平方增长：640≈20s/次，
+# 1280≈140s/次）。CUDA 可上调到 1024/1280。小窗口允许最多 2x 放大。
+VL_MAX_SIDE = int(os.getenv("GHOST_VL_MAX_SIDE", "640"))
+# llama.cpp 0.4.5+：Qwen-VL grounding 建议至少 1024 个图像 token
+# （0.3.36 无此参数，驱动会自动忽略）。
+VL_IMAGE_MIN_TOKENS = int(os.getenv("GHOST_VL_IMAGE_MIN_TOKENS", "1024"))
+# 混合图标定位（CV 粗筛 + 编号网格 + VL 选号）：
+# auto（默认）= 仅 7b 档启用；1/true=强制启用；0/false=关闭。
+VL_HYBRID = os.getenv("GHOST_VL_HYBRID", "auto").strip().lower() or "auto"
+VL_HYBRID_MIN_CONF = float(os.getenv("GHOST_VL_HYBRID_MIN_CONF", "0.55"))
 # mock 后端夹具 JSON：[{"text","type","bbox":[x,y,w,h]}]
 VL_MOCK_JSON = os.getenv("GHOST_VL_MOCK_JSON", "").strip()
 

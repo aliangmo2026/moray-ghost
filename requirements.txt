@@ -17,7 +17,9 @@ keyboard==0.13.5  # v0.7.1 全局急停热键（estop：Ctrl+Alt+Q）；v0.8.0 A
 mcp==2.3.0  # 官方 MCP Python SDK（mcp_server.py Stdio 协议面）
 rapidocr-onnxruntime==1.4.4  # 轻量级本地视觉模型（PP-OCR ONNX，ocr 后端；--no-deps 安装以保留 opencv-python-headless，cv2 共用）
 onnxruntime==1.31.0  # ocr 后端推理引擎（rapidocr 的运行时依赖，显式锁定）
-llama-cpp-python==0.3.36  # 真实 VL 后端（llama）；Windows 安装需 CPU wheel 索引：pip install llama-cpp-python --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu（源码编译需短 TMP 绕 260 字符路径 + MSVC）
+# GPU 用户：先装本文件，再按 requirements-gpu.txt 覆盖 llama-cpp-python 为
+# 0.4.5+cu128；重跑本行会覆盖 GPU 轮子。
+llama-cpp-python==0.3.36  # CPU 基线；GPU 见 requirements-gpu.txt / docs §4.3（--no-deps 装 cu128 wheel）
 # 可选（v0.7 post_assert ocr_text_present）：本机未装 tesseract 时该断言如实报
 # POST_ASSERT_UNVERIFIABLE 挂起；字样校验可改用 anchor_present（cv2 模板，零新增依赖）
 # pytesseract==0.3.10

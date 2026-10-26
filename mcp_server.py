@@ -123,7 +123,7 @@ def analyze_screen(monitor: int = 1, window: Optional[str] = None,
     backend: auto|native|ocr|llama|mock（服务端执行，本进程不跑模型）。
     """
     body = _post("/vl/analyze", {"monitor": monitor, "window": window,
-                                 "backend": backend})
+                                 "backend": backend}, timeout=180)
     if body.get("error") == "WINDOW_NOT_FOUND":
         body["detail"] = "target window not found: " + repr(window)
     return body
@@ -149,12 +149,49 @@ def click_element(text: str, window: Optional[str] = None,
             payload["tab"] = {"url_contains": str(window)}
         return _post("/browser/action", payload)
 
-    an = _post("/vl/analyze", {"window": window, "backend": backend})
+    an = _post("/vl/analyze", {"window": window, "backend": backend},
+               timeout=180)
     if not an.get("ok"):
         return an
     try:
         control = vl_driver.find_control(an.get("controls") or [], text,
                                          match=match)
+    except vl_driver.VLElementNotFound as exc:
+        # 通用控件表未命中（2B 模型通常只列 1 条）→ 定向 grounding 二次定位。
+        # 服务端会校验标签包含目标 + bbox 面积/长宽比合理，拒绝整图/1px 幻觉。
+        loc = _post("/vl/analyze", {"window": window, "backend": backend,
+                                    "target": text}, timeout=180)
+        hybrid_detail = None
+        if (not loc.get("ok")
+                and loc.get("error") == "VL_ELEMENT_NOT_FOUND"
+                and vl_driver.hybrid_enabled()):
+            # 7B 档：CV 粗筛小图标 → 编号网格 → VL 选号。
+            hyp = _post("/vl/analyze", {"window": window, "backend": backend,
+                                        "target": text, "hybrid": True},
+                        timeout=300)
+            if hyp.get("ok"):
+                loc = hyp
+            elif hyp.get("error") != "VL_ELEMENT_NOT_FOUND":
+                return hyp
+            else:
+                hybrid_detail = hyp.get("detail")
+        if not loc.get("ok"):
+            if loc.get("error") == "VL_ELEMENT_NOT_FOUND":
+                detail = exc.detail
+                if hybrid_detail:
+                    detail += "; hybrid: " + str(hybrid_detail)
+                return {"ok": False, "error": exc.error, "detail": detail,
+                        "window": an.get("window"),
+                        "backend": an.get("backend")}
+            return loc
+        try:
+            control = vl_driver.find_control(loc.get("controls") or [], text,
+                                             match=match)
+        except vl_driver.VLError as exc2:
+            return {"ok": False, "error": exc2.error,
+                    "detail": exc2.detail, "window": loc.get("window"),
+                    "backend": loc.get("backend")}
+        an = loc
     except vl_driver.VLError as exc:
         return {"ok": False, "error": exc.error, "detail": exc.detail,
                 "window": an.get("window"), "backend": an.get("backend")}

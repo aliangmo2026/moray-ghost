@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import base64
 import logging
+import os
 import time
 from typing import Any, Dict, List, Optional, Union
 
@@ -16,8 +17,10 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from app.core import backend, controller, macro_matcher, macro_recorder
 from app.core import action_log, authz, environment, screen_mss, task_queue
-from app.core import window_locator
-from app.core.config import DB_PATH, JPEG_QUALITY, SERVICE, VERSION
+from app.core import vl_driver, window_locator
+from app.core.config import (DB_PATH, JPEG_QUALITY, SERVICE, VERSION,
+                             VL_BACKEND, VL_MODEL_PATH, VL_MMPROJ_PATH,
+                             VL_PROFILE)
 
 LOG = logging.getLogger("moray-ghost.routes")
 
@@ -27,7 +30,9 @@ router = APIRouter(prefix="/api/ghost")
 @router.get("/health")
 async def health() -> Dict[str, Any]:
     """v0.7.2 关键路径异步化：async 处理器直接跑在事件循环上，绝不排队等
-    线程池——即使所有动作线程被长任务占满，健康检查依然即时返回。"""
+    线程池——即使所有动作线程被长任务占满，健康检查依然即时返回。
+
+    v0.8.2：回显 VL 真视觉后端（配置/实际选中/模型/GPU offload 能力）。"""
     return {
         "status": "ok",
         "service": SERVICE,
@@ -35,6 +40,16 @@ async def health() -> Dict[str, Any]:
         "fail_safe_enabled": True,
         "token_required": True,
         "backends": {"screenshot": "mss", "input": "pyautogui"},
+        "vl_backend": vl_driver.describe_backend(),
+        "vl": {
+            "configured": VL_BACKEND,
+            "profile": VL_PROFILE,
+            "model": os.path.basename(VL_MODEL_PATH) or None,
+            "mmproj": os.path.basename(VL_MMPROJ_PATH) or None,
+            "gpu_offload": vl_driver.gpu_offload_supported(),
+            "model_loaded": vl_driver.llama_loaded(),
+            "hybrid": vl_driver.hybrid_enabled(),
+        },
         "monitors": [m for m in screen_mss.monitors() if m["index"] != 0],
         "cursor": list(backend.position()),
         "db_path": str(DB_PATH),

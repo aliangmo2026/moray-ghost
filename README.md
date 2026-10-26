@@ -1,12 +1,12 @@
 # moray-ghost
 
-![version](https://img.shields.io/badge/version-0.8.0-blue)
+![version](https://img.shields.io/badge/version-0.9.0-blue)
 ![python](https://img.shields.io/badge/python-3.12.2-3776AB?logo=python&logoColor=white)
 ![platform](https://img.shields.io/badge/platform-Windows%2010%20%2F%2011-0078D6)
-![regression](https://img.shields.io/badge/regression-345%20checks%20passed-brightgreen)
+![regression](https://img.shields.io/badge/regression-345%2B%20checks%20passed-brightgreen)
 ![audit](https://img.shields.io/badge/audit-JSONL%20%2B%20token%20fingerprint-lightgrey)
 
-Windows 桌面自动化本地服务（v0.8.0）：**mss 极速截图 + 授权式 pyautogui 动作 + 宏录制/安全重放 + 任务生命周期 + 环境感知 + 视觉反哺 Heal + 多 Agent 任务队列 + Web 监控面板 + 官方 Python SDK + MCP Server（Stdio，任意 AI Agent 即插即用）+ 本地 VL 感知（rapidocr / llama-cpp GGUF）+ v0.7 绝对防御 + v0.7.1 企业级安全 + v0.7.2 极限安全**。
+Windows 桌面自动化本地服务（v0.9.0）：**mss 极速截图 + 授权式 pyautogui 动作 + 宏录制/安全重放 + 任务生命周期 + 环境感知 + 视觉反哺 Heal + 多 Agent 任务队列 + Web 监控面板 + 官方 Python SDK + MCP Server（Stdio，任意 AI Agent 即插即用）+ 本地 VL 感知（rapidocr / llama-cpp CUDA GGUF，2B/7B 档位 + CV+VL 混合图标定位）+ v0.7 绝对防御 + v0.7.1 企业级安全 + v0.7.2 极限安全**。
 
 只监听 `127.0.0.1:8030`；绝不触碰 `D:\MoRay`（主仓）。
 
@@ -83,6 +83,16 @@ Windows 桌面自动化本地服务（v0.8.0）：**mss 极速截图 + 授权式
 > **像素级实证**：`scripts/test_v08_paint_precision.py` **11/11**——MCP 全链操作
 > 系统画图（OCR 读出功能区 19 控件、拖拽经安全队列），笔迹 bbox 与意图逐边
 > 误差 [2,2,4,3]px。
+>
+> **v0.9.0 GPU + 7B 档位 + 混合图标定位**：`llama-cpp-python 0.4.5+cu128`
+> （CUDA 12.8 runtime/cuBLAS 由 pip 包提供），`/health` 回显
+> `vl.gpu_offload=true`；2B 靶窗定向 TTFT 0.68–2.65s、总 2.8–5.1s（GPU），
+> 无 OOM/掉卡；`.env` 用 `GHOST_VL_MODEL_PROFILE=2b|7b` 切档，7B 路径已预留。
+> 混合定位 `app/core/icon_grid.py`：CV（Otsu+连通域）粗筛小图标 → 编号
+> contact sheet → VL 选号 → 置信度门；定向 VL 结果再做 **OCR 标签复核**，
+> 拒绝“看似合理但目标不存在”的 bbox。验收：MCP **21/21**、画图 **11/11**、
+> 混合单测 **6/6**；2B 对无文字矩形的语义仍不可靠，混合定位默认只对 7B
+> 档启用（`GHOST_VL_HYBRID=auto`）。
 
 ## ⚠️ 测试纪律红线（所有脚本强制执行，违反即事故）
 
@@ -434,12 +444,14 @@ app/core/audit_sink.py      v0.7.1 结构化审计落盘（data/ghost_audit.json
 app/core/janitor.py         v0.7.1 异常清道夫（失败/取消释放按键鼠标 + 线程盘点）
 app/core/estop.py           v0.7.1 全局急停热键 Ctrl+Alt+Q（释放输入 → 审计 → os._exit）
 app/core/breaker.py         v0.7.2 动作频率熔断（窗口/连续双阈值 → 429 + 强制冻结）
-app/core/vl_driver.py       v0.8.0 VL 感知（native/ocr/llama/mock 四后端 + 路由分流 + 匹配铁律）
-app/api/vl_routes.py        v0.8.0 POST /vl/analyze（服务端跑感知，需 token，只读）
+app/core/vl_driver.py       v0.8.0 VL 感知（native/ocr/llama/mock 四后端 + 路由分流 + 匹配铁律；v0.9 GPU/OCR 标签复核）
+app/core/icon_grid.py       v0.9 CV 图标粗筛 + 编号 contact sheet（混合定位）
+app/api/vl_routes.py        v0.8.0 POST /vl/analyze（服务端跑感知，需 token，只读；v0.9 target/hybrid）
 mcp_server.py               v0.8.0 MCP Server（官方 SDK Stdio；4 Tools；身份/白名单环境注入）
 scripts/ghost_watchdog.py   v0.7.2 独立看门狗（主进程被强杀后 keybd_event 释放修饰键）
 scripts/test_v072_extreme.py  v0.7.2 极限安全验收：UAC/看门狗/熔断/硬超时（40 checks）
-scripts/test_v08_mcp_vl.py  v0.8.0 MCP+VL 验收：Stdio/感知/点击/打字/任务/门禁（20 checks）
+scripts/test_v08_mcp_vl.py  v0.8.0 MCP+VL 验收：Stdio/感知/点击/打字/任务/门禁（21 checks）
+scripts/test_v09_hybrid_icons.py  v0.9 混合图标 CV/编号网格/开关矩阵单测（6 checks）
 docs/v0.8-design.md         v0.8.0 vl_driver + mcp_server 设计结构（与实现同步）
 docs/MCP_接入指南.md         Cursor/Claude Desktop 接入 + 模型下载放置 + 排障
 scripts/test_v08_paint_precision.py  画图像素级精度综合（MCP 全链 + cv2 逐边对比）

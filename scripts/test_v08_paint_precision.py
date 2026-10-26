@@ -156,14 +156,51 @@ def shot_png() -> "np.ndarray":
     return cv2.cvtColor(np.array(img), cv2.COLOR_RGB2BGR)
 
 
-def find_paint_window(snap_before_pids: set, timeout: float = 20.0):
-    """差集绑定：新出现且进程为 mspaint.exe 的顶层窗。"""
+def paint_pids() -> set:
+    """当前所有 mspaint.exe 进程 pid（只读探测，用于红线前置检查）。"""
+    out = set()
+    for p in psutil.process_iter(["pid", "name"]):
+        if str(p.info.get("name") or "").lower() == "mspaint.exe":
+            out.add(int(p.info["pid"]))
+    return out
+
+
+def kill_tree(proc: subprocess.Popen) -> None:
+    """只杀本次 Popen 的进程树（绝不碰用户已有的 Paint）。"""
+    try:
+        root = psutil.Process(proc.pid)
+        procs = root.children(recursive=True) + [root]
+    except psutil.Error:
+        procs = []
+    for q in procs:
+        try:
+            q.kill()
+        except psutil.Error:
+            pass
+
+
+def find_paint_window(snap_before_pids: set, paint_proc: subprocess.Popen,
+                      timeout: float = 20.0):
+    """差集绑定：新出现、属于本次 Popen 进程树、pid 不在启动前集合的窗口。"""
+    import win32process
+    allowed = {int(paint_proc.pid)}
+    try:
+        allowed |= {c.pid for c in psutil.Process(
+            paint_proc.pid).children(recursive=True)}
+    except psutil.Error:
+        pass
     end = time.time() + timeout
     while time.time() < end:
         for w in wl.list_windows():
             info = safety_gate.window_info(w["hwnd"])
             proc = str((info or {}).get("process") or "").lower()
-            if proc == "mspaint.exe" and w["rect"][2] - w["rect"][0] > 300:
+            if proc != "mspaint.exe" or w["rect"][2] - w["rect"][0] <= 300:
+                continue
+            try:
+                _tid, pid = win32process.GetWindowThreadProcessId(w["hwnd"])
+            except Exception:  # noqa: BLE001
+                continue
+            if int(pid) in allowed and int(pid) not in snap_before_pids:
                 return w
         time.sleep(0.4)
     return None
@@ -246,6 +283,9 @@ async def scenario(paint_hwnd: int, canvas: list) -> None:
                   f"backend={an.get('backend')} n={an.get('count')} "
                   f"texts={json.dumps(texts, ensure_ascii=False)[:140]}")
             for cand in ("矩形", "Rectangle", "正方形", "圆角矩形"):
+                # CPU 真 VL 单次分析 ~20s，期间其他窗口可能抢占前台；
+                # 安全点击前重新聚焦靶窗（门禁本身不改，仍要求落点归属）。
+                force_foreground(paint_hwnd)
                 got = tool_body(await s.call_tool("click_element", {
                     "text": cand, "match": "contains"}))
                 if got.get("ok") is True and got.get("http_status") == 200:
@@ -254,6 +294,7 @@ async def scenario(paint_hwnd: int, canvas: list) -> None:
             print(f"  (shape tool: {shape_used or '默认铅笔'})", flush=True)
 
             # 拖一笔（经安全任务队列：能力令牌/归属门禁/硬超时全生效）
+            force_foreground(paint_hwnd)
             out = tool_body(await s.call_tool("execute_task", {
                 "task_payload": {
                     "goal": "paint-precision-drag",
@@ -276,6 +317,11 @@ PAINT_STATE: dict = {}
 
 def main() -> int:
     print("== moray-ghost v0.8 paint precision acceptance ==", flush=True)
+    existing = paint_pids()
+    if existing:
+        print("[SKIP] 检测到既有 mspaint.exe 进程 %s；测试红线只碰自建窗口，"
+              "请先关闭画图再跑。" % sorted(existing), flush=True)
+        return 2
     srv = None
     paint = None
     win = None
@@ -289,7 +335,7 @@ def main() -> int:
 
         pids_before = {p.pid for p in psutil.process_iter(["pid"])}
         paint = spawn(["mspaint.exe"])
-        win = find_paint_window(pids_before)
+        win = find_paint_window(pids_before, paint)
         check("1 自建画图窗口已就位（差集绑定）", win is not None,
               f"win={(win or {}).get('title')!r}")
         if not win:
@@ -339,8 +385,8 @@ def main() -> int:
             check("3 笔迹 bbox 与意图逐边对比（±18px）", ok,
                   f"got={got_bbox} want={want_bbox} edges={edges}")
     finally:
-        if paint and paint.poll() is None:
-            paint.kill()
+        if paint:
+            kill_tree(paint)
             try:
                 paint.wait(timeout=8)
             except Exception:  # noqa: BLE001

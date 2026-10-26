@@ -28,13 +28,20 @@ class VLAnalyzeBody(BaseModel):
     hwnd: Optional[int] = None
     backend: str = Field(default="auto",
                          description="auto|native|ocr|llama|mock")
+    target: Optional[str] = Field(
+        default=None,
+        description="定向 grounding：只定位标签包含该文本的控件（llama）")
+    hybrid: bool = Field(
+        default=False,
+        description="CV 图标粗筛 + 编号网格 + VL 选号（建议 7B）")
 
 
 @router.post("/vl/analyze")
 def vl_analyze(body: VLAnalyzeBody) -> Dict[str, Any]:
     try:
         return vl_driver.analyze(monitor=body.monitor, window=body.window,
-                                 hwnd=body.hwnd, backend=body.backend)
+                                 hwnd=body.hwnd, backend=body.backend,
+                                 target=body.target, hybrid=body.hybrid)
     except vl_driver.VLError as exc:
         content: Dict[str, Any] = {"ok": False, "error": exc.error,
                                    "detail": exc.detail}

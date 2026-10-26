@@ -1,0 +1,20 @@
+# moray-ghost GPU 加速额外依赖（Windows / RTX 5060 Blackwell sm_120）
+#
+# 1) 安装 CUDA 12.8 runtime + cuBLAS DLL（不需要完整 CUDA Toolkit）：
+#      .venv\Scripts\python.exe -m pip install -r requirements-gpu.txt
+# 2) 用社区 cu128 wheel 覆盖 CPU 版 llama-cpp-python：
+#      下载 llama_cpp_python-0.4.5+cu128-cp312-cp312-win_amd64.whl
+#      https://github.com/JamePeng/llama-cpp-python/releases/tag/v0.4.5-cu128-win-20261025
+#      SHA256 b894e5a0c8bb97d1eb2a8394c6d177771d2b5ccc61f574f938b070d67489ec02
+#      .venv\Scripts\python.exe -m pip install --force-reinstall --no-deps <wheel>
+# 3) .env: GHOST_VL_N_GPU_LAYERS=-1 / GHOST_VL_MAX_SIDE=1024 /
+#    GHOST_VL_IMAGE_MIN_TOKENS=1024；重启后 /health 的 vl.gpu_offload 应为 true。
+#
+# 驱动 573.29 对应 CUDA 12.8；不要装 cu130/cu131 轮子（需 R580+ 驱动）。
+# 回滚 CPU：pip install llama-cpp-python==0.3.36 --extra-index-url
+#   https://abetlen.github.io/llama-cpp-python/whl/cpu
+nvidia-cuda-runtime-cu12==12.8.90
+nvidia-cublas-cu12==12.8.5.5
+nvidia-cuda-nvrtc-cu12==12.8.93
+# llama-cpp-python 0.4.5+cu128 的元数据要求 numpy<=2.3.2
+numpy==2.3.2

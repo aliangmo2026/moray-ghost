@@ -282,15 +282,28 @@ async def scenario(stem: str, hwnd: int, btn_c: tuple) -> None:
             check("1 各 tool schema 入参完整", schema_ok)
 
             # --- 2 感知（真实本地视觉后端） ---
+            # 感知也必须先聚焦：ZCode 等 topmost 窗口可能盖住靶窗上半部，
+            # 否则模型只能看到输入框（实测）。
+            force_foreground(hwnd)
             an = tool_body(await s.call_tool("analyze_screen", {
                 "window": base_title}))
             controls = an.get("controls") or []
+            hit = next((c for c in controls
+                        if str(c.get("text")) == "保存成功"), None)
+            if hit is None:
+                # 2B/GPU 偶发首帧漏控件（实测只回输入框）；重试一次。
+                print("  (analyze retry: first pass missed 保存成功)",
+                      flush=True)
+                force_foreground(hwnd)
+                an = tool_body(await s.call_tool("analyze_screen", {
+                    "window": base_title}))
+                controls = an.get("controls") or []
+                hit = next((c for c in controls
+                            if str(c.get("text")) == "保存成功"), None)
             texts = [str(c.get("text")) for c in controls]
             check("2 analyze_screen 成功且为真实视觉后端",
                   an.get("ok") is True and an.get("backend") in ("ocr", "llama"),
                   f"backend={an.get('backend')} count={an.get('count')}")
-            hit = next((c for c in controls
-                        if str(c.get("text")) == "保存成功"), None)
             check("2 控件表精准解析出按钮「保存成功」", hit is not None,
                   f"texts={json.dumps(texts, ensure_ascii=False)[:150]}")
             if hit:
@@ -301,12 +314,26 @@ async def scenario(stem: str, hwnd: int, btn_c: tuple) -> None:
                       f"center={[cx, cy]} rect={rect}")
 
             # --- 3 VL 定位 + 安全点击 ---
+            # CPU 真 VL 单次分析 ~20s，期间其他窗口可能抢占前台；点击前
+            # 重新聚焦靶窗（门禁本身不改，仍校验落点归属）。
+            check("3 靶窗强占前台（点击门禁前提）", force_foreground(hwnd))
             clk = tool_body(await s.call_tool("click_element", {
                 "text": "保存成功", "window": base_title}))
+            if clk.get("http_status") != 200:
+                # 用户实时操作可能在动作瞬间抢前台/移鼠标 → 门禁 400；
+                # 重新聚焦后重试一次（断言仍要求最终 200，门禁未放宽）。
+                print("  (click retry: first=%s body=%s)"
+                      % (clk.get("http_status"),
+                         json.dumps(clk, ensure_ascii=False)[:300]),
+                      flush=True)
+                force_foreground(hwnd)
+                clk = tool_body(await s.call_tool("click_element", {
+                    "text": "保存成功", "window": base_title}))
             check("3 click_element（VL 文本坐标）→ 200",
                   clk.get("ok") is True and clk.get("http_status") == 200,
                   f"status={clk.get('http_status')} "
-                  f"clicked={json.dumps(clk.get('clicked'), ensure_ascii=False)}")
+                  f"clicked={json.dumps(clk.get('clicked'), ensure_ascii=False)} "
+                  f"body={json.dumps(clk, ensure_ascii=False)[:200]}")
             w2 = find_by_title(base_title + "-CLICKED", timeout=6)
             check("3 真实点击生效（靶窗标题 -CLICKED）", w2 is not None,
                   f"title={(w2 or {}).get('title')!r}")
