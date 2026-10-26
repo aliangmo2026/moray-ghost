@@ -1,7 +1,15 @@
-"""统一安全管道：全局串行锁 + 坐标校验 + Fail-Safe + 前后截图审计。
+"""统一安全管道：全局串行锁 + 坐标校验 + Fail-Safe + 前后截图审计 + v0.7 绝对防御。
 
 所有真实动桌面的调用（包括 v0.3 的宏重放）都必须走 run_action()，
 不得绕过本模块直接调用 backend。
+
+v0.7 三道门禁（safety_gate，全部在此咽喉强制）：
+1. 窗口黑名单：目标窗口进程/标题高危 → 403 HIGH_RISK_WINDOW（锁前早杀 + 锁内
+   落点复核，绝不产生输入）。
+2. 键盘黑名单：系统级热键（win 系 / ctrl+shift+esc / ctrl+alt+delete）与破坏性
+   文本 → 403 HIGH_RISK_INPUT（纯字符串、最早校验）。
+3. 能力令牌：capabilities.allowed_windows 缺失或目标进程不在名单 →
+   403 CAPABILITY_DENIED（move 无 hwnd 不与窗口交互，豁免令牌）。
 """
 from __future__ import annotations
 
@@ -11,8 +19,8 @@ import time
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
-from . import backend, screen_mss
-from . import action_log
+from . import backend, safety_gate, screen_mss
+from . import action_log, authz, janitor
 from .backend import FailSafeException
 
 LOG = logging.getLogger("moray-ghost.controller")
@@ -53,6 +61,30 @@ class FailSafeTriggered(ActionError):
 class ForegroundError(ActionError):
     status = 409
     error = "WINDOW_NOT_FOREGROUND"
+
+
+class HighRiskWindowError(ActionError):
+    """v0.7 红线：目标窗口在黑名单（cmd/powershell/regedit/Terminal/UAC/…）。"""
+    status = 403
+    error = "HIGH_RISK_WINDOW"
+
+
+class HighRiskInputError(ActionError):
+    """v0.7 红线：系统级热键 / 破坏性文本。"""
+    status = 403
+    error = "HIGH_RISK_INPUT"
+
+
+class CapabilityDeniedError(ActionError):
+    """v0.7 最小权限：未携带能力令牌，或目标进程不在 allowed_windows。"""
+    status = 403
+    error = "CAPABILITY_DENIED"
+
+
+class SourceDeniedError(ActionError):
+    """v0.7.1 生产环境：动作不在带 Token 的合法 HTTP 调用链上（旁路裸调）。"""
+    status = 403
+    error = "SOURCE_DENIED"
 
 
 class InternalActionError(ActionError):
@@ -121,6 +153,13 @@ def run_action(payload: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _run_action_impl(payload: Dict[str, Any]) -> Dict[str, Any]:
+    # v0.7.1 生产环境输入源过滤（最高优先级、零副作用，先于一切校验）：
+    # 动作必须来自带 Token 的合法 HTTP 调用链（http_api）或其派发的任务
+    # （task_queue）；进程内裸调 run_action 等旁路一律 403 SOURCE_DENIED。
+    try:
+        authz.assert_action_source()
+    except authz.SourceDenied as exc:
+        raise SourceDeniedError(str(exc)) from exc
     action = str(payload.get("action", "")).strip().lower()
     if action not in VALID_ACTIONS:
         raise SafetyError(f"unsupported action: {action!r} (valid: {VALID_ACTIONS_TXT})")
@@ -148,15 +187,24 @@ def _run_action_impl(payload: Dict[str, Any]) -> Dict[str, Any]:
         # drag 带显式轨迹时 x/y 可省略（起点取 points[0]），其余动作必须给 x/y
         raise SafetyError(f"action {action!r} requires x/y")
 
+    # v0.7 键盘黑名单（最高优先级、纯字符串零副作用）：系统级热键与破坏性文本
+    # 在一切参数/坐标校验之前拒绝——绝不让危险输入走完整条管道。
+    keys: Optional[List[str]] = None
+    if action == "hotkey":
+        keys = _parse_hotkey(str(text))
+        reason = safety_gate.redline_hotkey(keys)
+        if reason:
+            raise HighRiskInputError(reason, combo=str(text), keys=keys)
+    if action == "type":
+        reason = safety_gate.redline_text(str(text))
+        if reason:
+            raise HighRiskInputError(reason, action="type")
+
     mon_count = len(screen_mss.monitors())  # 含 index 0 = 全屏联合区
     max_mon = mon_count - 1
     if monitor < 1 or monitor > max_mon:
         raise SafetyError(f"monitor out of range: {monitor} (1..{max_mon})")
     mon = screen_mss.monitor_rect(monitor)
-
-    keys: Optional[List[str]] = None
-    if action == "hotkey":
-        keys = _parse_hotkey(str(text))
 
     # drag/scroll 专属解析（v0.6 M1）：轨迹/滚轮在通用坐标校验之后、进锁之前完成
     trajectory: Optional[List[List[int]]] = None
@@ -270,6 +318,39 @@ def _run_action_impl(payload: Dict[str, Any]) -> Dict[str, Any]:
             raise SafetyError(
                 f"coordinates ({xi},{yi}) fall inside a Fail-Safe corner", x=xi, y=yi)
 
+    # ---- v0.7 能力令牌 + 窗口黑名单（锁前早杀） ------------------------
+    # 纯参数校验（上面的 400 SAFETY_BLOCKED 族）先行，既有语义不变；此处开始
+    # 涉及"输入会打进哪个窗口"的门禁。锁内还会对 no-hwnd 动作的实时落点复核。
+    caps: Optional[Dict[str, Any]] = None
+    caps_raw = payload.get("capabilities")
+    if caps_raw is not None:
+        try:
+            caps = safety_gate.parse_capabilities(caps_raw)
+        except ValueError as exc:
+            raise SafetyError(str(exc)) from exc
+    want_hwnd = payload.get("hwnd")
+    # 会打进窗口的输入一律要求令牌；move 无 hwnd 不与任何窗口交互 → 豁免
+    needs_caps = action != "move" or want_hwnd is not None
+    if needs_caps and caps is None:
+        raise CapabilityDeniedError(
+            "no capability token: declare capabilities.allowed_windows "
+            "(最小权限原则：未声明白名单的输入一律拒绝)", action=action)
+    if want_hwnd:
+        info = safety_gate.window_info(int(want_hwnd))
+        if info is not None:
+            reason = safety_gate.redline_window(info)
+            if reason:
+                raise HighRiskWindowError(
+                    reason, hwnd=info["hwnd"], process=info.get("process"),
+                    title=info.get("title"))
+            if not safety_gate.capability_allows(caps, info["process"]):
+                raise CapabilityDeniedError(
+                    "window process " + repr(info.get("process"))
+                    + " is not in capabilities.allowed_windows "
+                    + repr(caps.get("allowed_windows")),
+                    hwnd=info["hwnd"], process=info.get("process"),
+                    title=info.get("title"))
+
     # 输入审计：每一次真实桌面输入在此留一行账（本模块是全仓唯一动鼠标的咽喉，
     # 宏重放/任务/直接动作都汇到这里）；与 logs/access.log 的 HTTP 层记录互相印证，
     # "鼠标为什么动了"从此可事后归因。type 的文本内容不记账（只记坐标）。
@@ -285,10 +366,58 @@ def _run_action_impl(payload: Dict[str, Any]) -> Dict[str, Any]:
         result = _run_locked_action(action, xi, yi, text, keys, monitor, settle,
                                     fmt, quality, scale, include_before_b64,
                                     x_req, y_req, coord_source, resolved_physical,
-                                    payload.get("hwnd"),
+                                    want_hwnd, caps,
                                     trajectory, trajectory_t,
                                     scroll_dy, scroll_smooth)
     return result
+
+
+def _resolve_input_target(action: str, want_hwnd: Optional[int],
+                          xi: Optional[int], yi: Optional[int]) -> Optional[int]:
+    """输入实际去向窗口（v0.7 锁内复核用）。
+
+    显式 hwnd > 落点根窗口（click 系 / drag / scroll，取 point_root）>
+    前台窗口（type / hotkey 的文本只会进前台）。move 无 hwnd 不与窗口交互 → None。
+    """
+    if want_hwnd:
+        return int(want_hwnd)
+    if action in ("click", "double_click", "right_click", "drag", "scroll") \
+            and xi is not None and yi is not None:
+        return backend.point_root((xi, yi))
+    if action in ("type", "hotkey"):
+        return backend.foreground_hwnd()
+    return None
+
+
+def _gate_target_window(action: str, caps: Optional[Dict[str, Any]],
+                        target_hwnd: Optional[int], monitor: int,
+                        fmt: str, quality: int, label: str,
+                        before_path: Optional[str]) -> None:
+    """锁内门禁：target_hwnd 过窗口黑名单 + 能力白名单，命中即 403（带审计截图）。"""
+    if not target_hwnd:
+        return
+    info = safety_gate.window_info(target_hwnd)
+    reason = safety_gate.redline_window(info)
+    if reason:
+        after_img, _ = screen_mss.grab(monitor)
+        after_path = str(screen_mss.save_audit(after_img, "after", fmt, quality))
+        raise HighRiskWindowError(
+            label + reason, hwnd=int(target_hwnd),
+            process=(info or {}).get("process"), title=(info or {}).get("title"),
+            before_screenshot_path=before_path,
+            after_screenshot_path=after_path)
+    if not safety_gate.capability_allows(caps, (info or {}).get("process", "")):
+        after_img, _ = screen_mss.grab(monitor)
+        after_path = str(screen_mss.save_audit(after_img, "after", fmt, quality))
+        raise CapabilityDeniedError(
+            label + "input would land on process "
+            + repr((info or {}).get("process"))
+            + " which is not in capabilities.allowed_windows "
+            + repr((caps or {}).get("allowed_windows")),
+            hwnd=int(target_hwnd), process=(info or {}).get("process"),
+            title=(info or {}).get("title"),
+            before_screenshot_path=before_path,
+            after_screenshot_path=after_path)
 
 
 def _run_locked_action(action: str, xi: Optional[int], yi: Optional[int],
@@ -298,6 +427,7 @@ def _run_locked_action(action: str, xi: Optional[int], yi: Optional[int],
                        y_req: Optional[int], coord_source: str,
                        resolved_physical: Optional[List[int]],
                        want_hwnd: Optional[int],
+                       caps: Optional[Dict[str, Any]] = None,
                        trajectory: Optional[List[List[int]]] = None,
                        trajectory_t: Optional[List[int]] = None,
                        scroll_dy: Optional[int] = None,
@@ -339,6 +469,20 @@ def _run_locked_action(action: str, xi: Optional[int], yi: Optional[int],
                     expected_hwnd=int(want_hwnd), foreground=fg,
                     before_screenshot_path=before_path,
                     after_screenshot_path=after_path)
+
+        # v0.7 锁内复核（任何物理移动之前）：解析输入实际去向窗口，再过一遍
+        # 窗口黑名单 + 能力白名单。no-hwnd 动作的落点根窗口/前台窗口只有在
+        # 这里实时解析才无 TOCTOU 空隙（锁前已查显式 hwnd，此处并集覆盖）。
+        target_hwnd = _resolve_input_target(action, want_hwnd, xi, yi)
+        _gate_target_window(action, caps, target_hwnd, monitor, fmt, quality,
+                            "", before_path)
+        if action == "drag" and trajectory is not None and not want_hwnd:
+            # 无 hwnd 拖拽：终点根窗口若与起点不同（跨窗口拖拽），两端都必须
+            # 过黑名单 + 白名单；带 hwnd 的拖拽已有起点+终点归属门禁兜底。
+            end_root = backend.point_root((trajectory[-1][0], trajectory[-1][1]))
+            if end_root and end_root != target_hwnd:
+                _gate_target_window(action, caps, end_root, monitor, fmt, quality,
+                                    "drag end point: ", before_path)
 
         # 移动 + 漂移校验（type 前也必须把光标移到 (x,y) 并校验）
         if xi is not None and yi is not None:
@@ -455,6 +599,7 @@ def _run_locked_action(action: str, xi: Optional[int], yi: Optional[int],
         after_img, _ = screen_mss.grab(monitor)
         after_path = str(screen_mss.save_audit(after_img, "after", fmt, quality))
     except FailSafeException:
+        janitor.release_input("action_failsafe")  # v0.7.1 失败路径清场
         scene_path, scene_b64 = _scene_shot(fmt, quality)
         raise FailSafeTriggered(
             "pyautogui Fail-Safe triggered; whole action aborted",
@@ -463,8 +608,10 @@ def _run_locked_action(action: str, xi: Optional[int], yi: Optional[int],
     except ActionError:
         # SafetyError / ForegroundError / BadSourceSizeError 原样上抛——
         # 语义化错误绝不能被兜底处理器吞掉转成 INTERNAL_ERROR
+        janitor.release_input("action_error")  # v0.7.1 失败路径清场（幂等）
         raise
     except Exception as exc:
+        janitor.release_input("action_crash")  # v0.7.1 崩溃路径清场
         try:
             if after_path is None:
                 after_img, _ = screen_mss.grab(monitor)

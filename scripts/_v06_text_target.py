@@ -4,11 +4,22 @@
 - 标题带唯一 stem（测试脚本差集绑定），TOPMOST 常驻；
 - 初始化完成后把 "顶层hwnd\\n文本区左上x\\n文本区左上y" 写入坐标文件（测试轮询）。
 用法：python _v06_text_target.py <内容文件> <唯一stem> <坐标文件>
+
+DPI 红线（v0.7 补）：import tkinter 前声明 Per-Monitor 感知——本机 150% 缩放下，
+DPI 无感知进程的 geometry/winfo 坐标会被系统虚拟化（请求 (900,500) 实际落在
+物理 (1350,750)），坐标文件点位全错位、点击落进别的窗口（v07 套件实证）。
 """
 import ctypes
 import sys
-import tkinter as tk
 from pathlib import Path
+
+if sys.platform == "win32":
+    try:
+        ctypes.windll.shcore.SetProcessDpiAwareness(2)
+    except OSError:
+        pass
+
+import tkinter as tk  # noqa: E402
 
 content = Path(sys.argv[1]).read_text(encoding="utf-8")
 stem = sys.argv[2]

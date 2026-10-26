@@ -9,13 +9,14 @@ import logging
 import time
 from typing import Any, Dict, List, Optional, Union
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Query, Request
 from fastapi.responses import JSONResponse
 from PIL import Image
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.core import backend, controller, macro_matcher, macro_recorder
-from app.core import action_log, environment, screen_mss, task_queue, window_locator
+from app.core import action_log, authz, environment, screen_mss, task_queue
+from app.core import window_locator
 from app.core.config import DB_PATH, JPEG_QUALITY, SERVICE, VERSION
 
 LOG = logging.getLogger("moray-ghost.routes")
@@ -131,7 +132,14 @@ class ExecuteRequest(BaseModel):
 
 
 @router.post("/execute_action")
-def execute_action(req: ExecuteRequest) -> Dict[str, Any]:
+def execute_action(req: ExecuteRequest,
+                   request: Request = None) -> Dict[str, Any]:  # type: ignore[assignment]
+    # v0.7.1 身份上下文：token 中间件校验通过的身份落到本线程——
+    # 生产环境输入源过滤（authz）与 JSONL 审计归因都读它。
+    # 显式覆盖（含 None）：绝不让同一线程上一请求的残留身份串进本次动作。
+    # request 可缺省：进程内直调（无 HTTP 身份）→ ctx=None → 生产环境被
+    # SOURCE_DENIED 拒绝（旁路默认拒绝），开发环境保持旧行为。
+    authz.bind_request(request)
     # 冻结门禁（v0.5）：emergency stop 期间拒绝一切桌面输入（被拒也入账，驾驶舱可见）
     if task_queue.is_frozen():
         action_log.record("native", req.action,

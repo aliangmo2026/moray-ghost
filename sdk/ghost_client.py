@@ -15,10 +15,17 @@
 多 Agent：构造时传 ``agent_id``（或环境变量 ``GHOST_AGENT_ID``），请求自动携带
 ``X-Agent-Id`` 头；跨 Agent 访问他人任务会抛 ``GhostForbiddenError``。
 
+v0.7 能力令牌（最小权限，强制）：构造时声明 ``allowed_windows``（或直接传
+``capabilities``），客户端会在所有会产生桌面输入的请求里自动携带；服务端核对
+目标窗口进程是否在白名单内。未声明 → 默认 ``{"allowed_windows": []}``：
+纯 wait 任务可用，任何输入动作/含输入步骤的任务会被 403/400 明确拒绝。
+
 异常体系（不要写裸 requests 代码）::
     GhostError                 基类：status / error / detail / data
     ├─ GhostAuthError          401 token 缺失或错误
     ├─ GhostForbiddenError     403 跨 Agent 访问
+    ├─ GhostRedlineError       403 v0.7 红线：HIGH_RISK_WINDOW / HIGH_RISK_INPUT /
+    │                          CAPABILITY_DENIED（黑名单命中或目标不在白名单）
     ├─ GhostFrozenError        503 emergency stop 冻结中
     ├─ SystemNotReadableError  503 锁屏/安全桌面/抓屏失败
     └─ TaskDegradedError       任务 degraded 挂起（.task 为完整任务快照）
@@ -59,6 +66,13 @@ class GhostAuthError(GhostError):
 
 class GhostForbiddenError(GhostError):
     pass
+
+
+class GhostRedlineError(GhostError):
+    """v0.7 红线拒绝：HIGH_RISK_WINDOW / HIGH_RISK_INPUT / CAPABILITY_DENIED。
+
+    黑名单窗口/热键/文本，或目标窗口不在 capabilities.allowed_windows 白名单。
+    """
 
 
 class GhostFrozenError(GhostError):
@@ -127,23 +141,28 @@ class EnvironmentAPI(_Namespace):
 
 
 class ActionAPI(_Namespace):
-    """单步桌面动作。全部走服务端统一安全管道（串行锁 + Fail-Safe + 前后审计截图）。"""
+    """单步桌面动作。全部走服务端统一安全管道（串行锁 + Fail-Safe + 前后审计截图 +
+    v0.7 红线门禁）。自动携带客户端 capabilities（最小权限令牌）。"""
 
     def click(self, x: int, y: int, monitor: int = 1,
               settle_seconds: float = 0.5, **kw: Any) -> Dict[str, Any]:
+        kw.setdefault("capabilities", self._client.capabilities)
         return self._client.request("POST", "/execute_action", {
             "action": "click", "x": int(x), "y": int(y),
             "monitor": monitor, "settle_seconds": settle_seconds, **kw})
 
     def double_click(self, x: int, y: int, **kw: Any) -> Dict[str, Any]:
+        kw.setdefault("capabilities", self._client.capabilities)
         return self._client.request("POST", "/execute_action", {
             "action": "double_click", "x": int(x), "y": int(y), **kw})
 
     def right_click(self, x: int, y: int, **kw: Any) -> Dict[str, Any]:
+        kw.setdefault("capabilities", self._client.capabilities)
         return self._client.request("POST", "/execute_action", {
             "action": "right_click", "x": int(x), "y": int(y), **kw})
 
     def move(self, x: int, y: int, **kw: Any) -> Dict[str, Any]:
+        kw.setdefault("capabilities", self._client.capabilities)
         return self._client.request("POST", "/execute_action", {
             "action": "move", "x": int(x), "y": int(y), **kw})
 
@@ -157,9 +176,11 @@ class ActionAPI(_Namespace):
             body["y"] = int(y)
         if hwnd is not None:
             body["hwnd"] = int(hwnd)
+        kw.setdefault("capabilities", self._client.capabilities)
         return self._client.request("POST", "/execute_action", {**body, **kw})
 
     def hotkey(self, combo: str, **kw: Any) -> Dict[str, Any]:
+        kw.setdefault("capabilities", self._client.capabilities)
         return self._client.request("POST", "/execute_action", {
             "action": "hotkey", "text": combo, **kw})
 
@@ -177,9 +198,12 @@ class TaskAPI(_Namespace):
     """任务生命周期 + 自动轮询。步骤 schema 见 README：macro / action / wait / require_vision。"""
 
     def create(self, steps: List[Dict[str, Any]], goal: Optional[str] = None,
-               task_id: Optional[str] = None) -> Dict[str, Any]:
+               task_id: Optional[str] = None,
+               capabilities: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         return self._client.request("POST", "/task", {
-            "goal": goal, "task_id": task_id, "steps": steps})
+            "goal": goal, "task_id": task_id, "steps": steps,
+            "capabilities": capabilities if capabilities is not None
+            else self._client.capabilities})
 
     def start(self, task_id: str) -> Dict[str, Any]:
         """入队（202）。返回体含 status=queued 与 queue_position。"""
@@ -270,11 +294,15 @@ class MacroAPI(_Namespace):
 
     def replay(self, macro_id: str, dry_run: bool = False,
                hwnd: Optional[int] = None, task_id: Optional[str] = None,
-               allow_fallback: bool = False) -> Dict[str, Any]:
-        """锚点驱动安全重放；409 类失败（MACRO_NOT_FOUND 等）抛 GhostError。"""
+               allow_fallback: bool = False,
+               capabilities: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """锚点驱动安全重放；409 类失败（MACRO_NOT_FOUND 等）抛 GhostError。
+        真实重放（dry_run=False）强制携带 capabilities（v0.7 最小权限）。"""
         return self._client.request("POST", "/macro/" + macro_id + "/replay", {
             "dry_run": dry_run, "hwnd": hwnd, "task_id": task_id,
-            "allow_fallback": allow_fallback})
+            "allow_fallback": allow_fallback,
+            "capabilities": capabilities if capabilities is not None
+            else self._client.capabilities})
 
     def heal(self, macro_id: str, step_id: int, mode: str, base_version: int,
              vision: Dict[str, Any], task_id: Optional[str] = None,
@@ -305,13 +333,27 @@ class GhostClient:
                  token: Optional[str] = None,
                  agent_id: Optional[str] = None,
                  timeout: float = 30.0,
-                 poll_interval: float = 0.4):
+                 poll_interval: float = 0.4,
+                 allowed_windows: Optional[List[str]] = None,
+                 capabilities: Optional[Dict[str, Any]] = None):
         if not (base_url.startswith("http://") or base_url.startswith("https://")):
             raise ValueError("base_url must start with http:// or https://")
         self.base_url = base_url.rstrip("/")
         self.agent_id = (agent_id or os.getenv("GHOST_AGENT_ID", "").strip()) or None
         self.timeout = timeout
         self.poll_interval = poll_interval
+        # v0.7 能力令牌（最小权限）：显式 capabilities > allowed_windows 便捷参数 >
+        # 默认空名单（纯 wait 任务可用；任何输入动作会被服务端 403 明确拒绝）。
+        if capabilities is not None:
+            if not isinstance(capabilities, dict):
+                raise ValueError("capabilities must be a dict")
+            self.capabilities: Dict[str, Any] = dict(capabilities)
+            self.capabilities.setdefault("allowed_windows", [])
+        else:
+            self.capabilities = {
+                "allowed_windows": [w.strip().lower()
+                                    for w in (allowed_windows or [])
+                                    if isinstance(w, str) and w.strip()]}
         self._session = requests.Session()
         self._session.headers["X-Ghost-Token"] = _resolve_token(token) or ""
         if self.agent_id:
@@ -357,6 +399,9 @@ class GhostClient:
             return GhostAuthError(detail)
         if resp.status_code == 403 and error == "AGENT_FORBIDDEN":
             return GhostForbiddenError(403, error, detail)
+        if resp.status_code == 403 and error in (
+                "HIGH_RISK_WINDOW", "HIGH_RISK_INPUT", "CAPABILITY_DENIED"):
+            return GhostRedlineError(resp.status_code, error, detail, data=body)
         if error == "GHOST_FROZEN":
             return GhostFrozenError(resp.status_code, error, detail)
         if error == "SYSTEM_NOT_READABLE":

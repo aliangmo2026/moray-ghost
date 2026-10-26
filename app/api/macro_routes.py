@@ -16,12 +16,12 @@ import json
 import time
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.core import environment, macro_matcher, macro_recorder, macro_runner
-from app.core import macro_store, screen_mss, task_queue
+from app.core import authz, environment, macro_matcher, macro_recorder
+from app.core import macro_runner, macro_store, screen_mss, task_queue
 
 router = APIRouter(prefix="/api/ghost")
 
@@ -35,6 +35,9 @@ class ReplayBody(BaseModel):
     # 重放目标窗口覆盖：主仓重开目标应用后把新 hwnd 传进来，所有步骤改用该窗口
     # （不做 class 模糊重绑定，避免绑到用户窗口）。缺省用各步录制时的 hwnd。
     hwnd: Optional[int] = None
+    # v0.7 能力令牌（最小权限，真实重放强制；dry_run 豁免）：
+    # {"allowed_windows": ["notepad.exe", ...]}
+    capabilities: Optional[Dict[str, Any]] = None
 
 
 class VisionPayload(BaseModel):
@@ -177,7 +180,7 @@ def probe(body: ProbeBody):
 
 
 @router.post("/macro/{macro_id}/replay")
-def replay(macro_id: str, body: ReplayBody):
+def replay(macro_id: str, body: ReplayBody, request: Request):
     """安全重放：锚点匹配驱动，逐步走 controller 同一安全管道。
 
     - dry_run=true：只做窗口存活 + 锚点匹配报告，不产生任何输入。
@@ -186,6 +189,8 @@ def replay(macro_id: str, body: ReplayBody):
       交主仓重新识图；绝不自行用 recorded_center 兜底。
     - 503 CAPTURE_FAILED：抓屏失败（已重试），主仓应重试本宏。
     """
+    # v0.7.1 身份上下文：重放每步走 run_action 同一咽喉，生产环境据此过滤输入源
+    authz.bind_request(request)
     # 冻结门禁（v0.5）：emergency stop 期间禁止真实重放（dry_run 只读，放行）
     if not body.dry_run and task_queue.is_frozen():
         return JSONResponse(status_code=503, content={
@@ -196,7 +201,8 @@ def replay(macro_id: str, body: ReplayBody):
         return macro_runner.replay(macro_id, dry_run=body.dry_run,
                                    allow_fallback=body.allow_fallback,
                                    task_id=body.task_id,
-                                   hwnd_override=body.hwnd)
+                                   hwnd_override=body.hwnd,
+                                   capabilities=body.capabilities)
     except macro_runner.ReplayError as exc:
         content: Dict[str, Any] = {"ok": False, "error": exc.error,
                                    "detail": exc.detail}

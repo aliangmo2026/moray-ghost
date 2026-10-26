@@ -46,6 +46,8 @@ H = {"X-Ghost-Token": token}
 RESULTS: list = []
 OWNED: set = set()
 TMP_FILES: list = []
+# v0.7 能力令牌（最小权限）：本套件 GUI 靶子全部是自建记事本（notepad.exe）
+CAPS = {"capabilities": {"allowed_windows": ["notepad.exe"]}}
 
 
 def check(name: str, ok: bool, detail: str = "") -> bool:
@@ -57,7 +59,7 @@ def check(name: str, ok: bool, detail: str = "") -> bool:
 
 def action(payload: dict):
     return requests.post("http://127.0.0.1:8030/api/ghost/execute_action", headers=H,
-                         json=payload, timeout=60)
+                         json={**CAPS, **payload}, timeout=60)
 
 
 def task_post(path: str, payload: dict):
@@ -277,7 +279,8 @@ def main() -> int:
     rect2 = wl.get_rect(hwnd2)
     editor2 = [rect2[0] + 400, rect2[1] + 300]
 
-    r = task_post("", {"task_id": "task_m3_a", "goal": "M3 主链路", "steps": [
+    r = task_post("", {"task_id": "task_m3_a", "goal": "M3 主链路",
+                       **CAPS, "steps": [
         {"kind": "action",
          "payload": {"action": "type", "text": "task ok", "x": editor2[0],
                      "y": editor2[1], "hwnd": hwnd2, "settle_seconds": 0.2}},
@@ -316,7 +319,7 @@ def main() -> int:
     action({"action": "hotkey", "text": "esc", "settle_seconds": 0.1})  # 关菜单
 
     # ---------- 场景 B：失败降级（遮挡锚点）→ 撤遮挡 → resume 恢复 ----------
-    r = task_post("", {"task_id": "task_m3_b", "steps": [
+    r = task_post("", {"task_id": "task_m3_b", **CAPS, "steps": [
         {"kind": "action",
          "payload": {"action": "type", "text": "task2", "x": editor2[0],
                      "y": editor2[1], "hwnd": hwnd2, "settle_seconds": 0.2}},
@@ -355,7 +358,7 @@ def main() -> int:
     ok_all &= check("B-8: 关闭记事本#2", close_owned(hwnd2), f"hwnd2={hwnd2}")
 
     # ---------- 场景 C：wait 长步中 cancel ----------
-    r = task_post("", {"task_id": "task_m3_c", "steps": [
+    r = task_post("", {"task_id": "task_m3_c", **CAPS, "steps": [
         {"kind": "wait", "ms": 8000},
         {"kind": "action",
          "payload": {"action": "click", "x": 1280, "y": 800, "settle_seconds": 0.1}},

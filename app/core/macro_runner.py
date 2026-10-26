@@ -21,7 +21,7 @@ from typing import Any, Dict, List, Optional
 
 import win32gui
 
-from . import environment, macro_store, screen_mss, window_locator
+from . import environment, macro_store, safety_gate, screen_mss, window_locator
 from .controller import ActionError, run_action
 from .macro_matcher import find
 
@@ -71,7 +71,8 @@ def _save_fail_shot(img: Any, step_id: Any) -> Optional[str]:
 
 def replay(macro_id: str, dry_run: bool = False, allow_fallback: bool = False,
            task_id: Optional[str] = None,
-           hwnd_override: Optional[int] = None) -> Dict[str, Any]:
+           hwnd_override: Optional[int] = None,
+           capabilities: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     # 环境门禁（v0.4 M2）：锁屏 / 安全桌面 / 桌面不可读时拒绝盲操作
     try:
         environment.assert_input_allowed()
@@ -87,6 +88,25 @@ def replay(macro_id: str, dry_run: bool = False, allow_fallback: bool = False,
         raise ReplayError(500, "INTERNAL_ERROR", "macro steps_json is corrupted")
     if not steps:
         raise ReplayError(400, "BAD_REQUEST", "macro has no steps")
+    # v0.7 能力令牌（最小权限）：真实重放会产生输入，必须携带 allowed_windows；
+    # dry_run 只读（匹配报告，零输入）豁免。宏存在性检查先行，既有 404 语义不变。
+    caps: Optional[Dict[str, Any]] = None
+    if not dry_run:
+        if capabilities is None:
+            raise ReplayError(
+                400, "CAPABILITIES_REQUIRED",
+                'real replay requires capabilities, e.g. '
+                '{"capabilities": {"allowed_windows": ["notepad.exe"]}} '
+                '(最小权限原则：未声明白名单的输入一律拒绝)')
+        try:
+            caps = safety_gate.parse_capabilities(capabilities)
+        except ValueError as exc:
+            raise ReplayError(400, "BAD_REQUEST", str(exc)) from exc
+        if not caps["allowed_windows"]:
+            raise ReplayError(
+                400, "CAPABILITIES_REQUIRED",
+                "real replay requires a non-empty capabilities.allowed_windows "
+                "(最小权限原则)")
 
     run_id = "run_" + uuid.uuid4().hex[:16]
     started = _now()
@@ -244,6 +264,8 @@ def replay(macro_id: str, dry_run: bool = False, allow_fallback: bool = False,
         # 3) 执行（同一安全管道；wait_after_ms 即动作后 settle）
         wait_ms = int(step.get("wait_after_ms") or 0)
         payload["settle_seconds"] = min(max(wait_ms / 1000.0, 0.0), 5.0)
+        # v0.7 能力令牌：任务/重放调用方声明的白名单随每一步注入 controller 门禁
+        payload["capabilities"] = caps
         # 3) 点击落点归属门禁：匹配与点击之间 z 序可能变化（遮挡/用户切窗），
         #    落点被别的窗口覆盖就拒绝——绝不把点击打进别的窗口（纪律红线）。
         if action in ("click", "double_click", "right_click"):

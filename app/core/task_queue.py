@@ -27,6 +27,8 @@ from collections import deque
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
+from . import authz
+
 LOG = logging.getLogger("moray-ghost.task_queue")
 
 _queue: deque = deque()             # 待派发 TaskRun（FIFO；对象直存，免注册表查询）
@@ -194,6 +196,11 @@ def _dispatch_loop() -> None:
             if task is None:
                 break
             _running_task = task
+            # v0.7.1：回放任务准入身份（哪个请求/ token 启动了本任务）——
+            # 生产环境输入源过滤与步骤审计都读它；派发前后显式覆盖/清空，
+            # 绝不让上一个任务的身份串进下一个。
+            authz.set_ctx({**(getattr(task, "admission", None) or {}),
+                           "source": "task_queue"})
             try:
                 # 派发时环境门禁复检（start 到派发之间可能锁屏）：
                 # 不可输入 → degraded 挂起，主环境恢复后 resume 重排队
@@ -216,3 +223,4 @@ def _dispatch_loop() -> None:
                               getattr(task, "task_id", "?"), exc)
             finally:
                 _running_task = None
+                authz.set_ctx(None)  # 身份不跨任务残留

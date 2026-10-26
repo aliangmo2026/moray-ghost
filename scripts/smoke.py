@@ -50,6 +50,42 @@ def load_token() -> str:
     return ""
 
 
+# v0.7 能力令牌（最小权限）：真实 click 一律落到本脚本自建靶窗（python.exe）
+CAPS = {"capabilities": {"allowed_windows": ["python.exe"]}}
+
+
+def open_click_target(pts: list):
+    """自建点击靶窗：覆盖所有真实 click 落点（主屏中心 + 物理 (640,400)）。
+
+    WS_EX_NOACTIVATE：纯视觉占位、绝不抢焦点（与 test_task 遮挡层同工艺）。
+    v0.7 起无 hwnd 的裸 click 会被能力令牌门禁 403 拒绝（落点窗口不可预知），
+    smoke 的真实点击因此必须落在自建白名单窗口内。
+    """
+    import tkinter as tk
+    xs = [p[0] for p in pts]
+    ys = [p[1] for p in pts]
+    left, top = min(xs) - 60, min(ys) - 60
+    w, h = (max(xs) - min(xs)) + 120, (max(ys) - min(ys)) + 120
+    root = tk.Tk()
+    root.overrideredirect(True)
+    root.geometry(f"{w}x{h}+{left}+{top}")
+    tk.Frame(root, background="#203040").pack(fill="both", expand=True)
+    root.attributes("-topmost", True)
+    root.update_idletasks()
+    hwnd = ctypes.windll.user32.GetParent(root.winfo_id())
+    ex = ctypes.windll.user32.GetWindowLongW(hwnd, -20)  # GWL_EXSTYLE
+    ctypes.windll.user32.SetWindowLongW(hwnd, -20, ex | 0x08000000)  # NOACTIVATE
+    root.update()
+    return root, int(hwnd)
+
+
+def close_click_target(root) -> None:
+    try:
+        root.destroy()
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--no-click", action="store_true", help="跳过真实 click 动作")
@@ -111,11 +147,18 @@ def main() -> int:
                     r.status_code == 404, str(r.json().get("error")))
 
     # 5) 授权 click（真实动作，落到安全坐标 = 主屏中心）
+    # v0.7：真实 click 必须落在自建靶窗内（能力令牌白名单），先拉靶窗盖住
+    # 主屏中心与物理 (640,400) 两个落点。
+    target_root = target_hwnd = None
+    if not args.no_click or args.failsafe:
+        target_root, target_hwnd = open_click_target([(safe_x, safe_y), (640, 400)])
+        print(f"(click target overlay hwnd={target_hwnd})", flush=True)
     if not args.no_click:
         r = requests.post("http://127.0.0.1:8030/api/ghost/execute_action", headers=H,
                           json={"action": "click", "x": safe_x, "y": safe_y,
+                                "hwnd": target_hwnd,
                                 "settle_seconds": 0.3, "fmt": "jpeg", "quality": 70,
-                                "scale": 0.5}, timeout=30)
+                                "scale": 0.5, **CAPS}, timeout=30)
         b = r.json()
         bp = b.get("before_screenshot_path")
         apath = b.get("after_screenshot_path")
@@ -140,8 +183,9 @@ def main() -> int:
                         f"original={ow}x{oh} scaled={s.get('width')}x{s.get('height')} expect={exp_w}x{exp_h}")
         r = requests.post("http://127.0.0.1:8030/api/ghost/execute_action", headers=H,
                           json={"action": "click", "x": 640, "y": 400,
+                                "hwnd": target_hwnd,
                                 "source_width": 1280, "source_height": 800,
-                                "settle_seconds": 0.1}, timeout=30)
+                                "settle_seconds": 0.1, **CAPS}, timeout=30)
         b = r.json()
         rp = b.get("resolved_physical") or []
         ca = b.get("cursor_after") or []
@@ -157,7 +201,8 @@ def main() -> int:
                         cursor_ok, f"cursor_after={ca}")
         r = requests.post("http://127.0.0.1:8030/api/ghost/execute_action", headers=H,
                           json={"action": "click", "x": 640, "y": 400,
-                                "settle_seconds": 0.1}, timeout=30)
+                                "hwnd": target_hwnd,
+                                "settle_seconds": 0.1, **CAPS}, timeout=30)
         b = r.json()
         rp2 = b.get("resolved_physical") or []
         ok_all &= check("test_scaled_click: backward compat (no source) resolved == [640,400]",
@@ -180,7 +225,8 @@ def main() -> int:
                 print(f"  (attempt {attempt}: mouse left corner at {pos}, retrying)", flush=True)
                 continue
             r = requests.post("http://127.0.0.1:8030/api/ghost/execute_action", headers=H,
-                              json={"action": "click", "x": safe_x, "y": safe_y}, timeout=30)
+                              json={"action": "click", "x": safe_x, "y": safe_y,
+                                    "hwnd": target_hwnd, **CAPS}, timeout=30)
             b = r.json()
             if r.status_code == 409:
                 got_409 = True
@@ -193,6 +239,9 @@ def main() -> int:
         ok_all &= check("mouse in corner -> 409 FAIL_SAFE_TRIGGERED + 现场截图",
                         got_409 and bool(scene) and Path(scene).is_file(),
                         f"cursor={b.get('cursor')} scene={Path(scene).name if scene else None}")
+
+    if target_root is not None:
+        close_click_target(target_root)
 
     passed = sum(1 for o in RESULTS if o)
     print(f"== smoke: {passed}/{len(RESULTS)} passed ==")

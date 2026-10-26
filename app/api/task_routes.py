@@ -18,7 +18,7 @@ from fastapi import APIRouter, Query, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.core import task_queue
+from app.core import audit_sink, authz, task_queue
 from app.core import task_runner
 from app.core.task_runner import TaskError
 
@@ -33,6 +33,9 @@ class TaskCreateBody(BaseModel):
     task_id: Optional[str] = Field(default=None, min_length=1)
     goal: Optional[str] = None
     steps: list[Dict[str, Any]]
+    # v0.7 能力令牌（最小权限，强制）：{"allowed_windows": ["notepad.exe", ...]}
+    # 含 action/macro 输入步骤时 allowed_windows 必须非空；缺失 → 400 CAPABILITIES_REQUIRED
+    capabilities: Optional[Dict[str, Any]] = None
 
 
 def _err(exc: TaskError) -> JSONResponse:
@@ -83,12 +86,14 @@ def create_task(body: TaskCreateBody, request: Request):
     try:
         steps = task_runner.validate_steps(body.steps)
         task = task_runner.create_task(steps, body.goal, body.task_id,
-                                       agent_id=_agent_id(request))
+                                       agent_id=_agent_id(request),
+                                       capabilities=body.capabilities)
     except TaskError as exc:
         return _err(exc)
     return JSONResponse(status_code=201, content={
         "ok": True, "task_id": task.task_id, "status": task.status,
-        "agent_id": task.agent_id, "steps_total": len(task.steps)})
+        "agent_id": task.agent_id, "steps_total": len(task.steps),
+        "capabilities": task.capabilities})
 
 
 @router.post("/task/{task_id}/start")
@@ -100,6 +105,15 @@ def start_task(task_id: str, request: Request):
     frozen = _frozen()
     if frozen is not None:
         return frozen
+    # v0.7.1 身份上下文 + 生产环境输入源过滤：任务准入即门禁，且把身份快照
+    # 挂到任务上（派发线程回放，保证任务步骤的审计可归因到本次 start 请求）。
+    authz.bind_request(request)
+    try:
+        authz.assert_action_source()
+    except authz.SourceDenied as exc:
+        return JSONResponse(status_code=403, content={
+            "ok": False, "error": "SOURCE_DENIED", "detail": str(exc)})
+    task.admission = authz.snapshot()
     try:
         task_runner.start_task(task)
     except TaskError as exc:
@@ -127,6 +141,14 @@ def resume_task(task_id: str, request: Request):
     frozen = _frozen()
     if frozen is not None:
         return frozen
+    # v0.7.1 与 start 同门禁：准入即过滤输入源 + 捕获审计身份
+    authz.bind_request(request)
+    try:
+        authz.assert_action_source()
+    except authz.SourceDenied as exc:
+        return JSONResponse(status_code=403, content={
+            "ok": False, "error": "SOURCE_DENIED", "detail": str(exc)})
+    task.admission = authz.snapshot()
     try:
         task_runner.resume_task(task)
     except TaskError as exc:
@@ -159,17 +181,22 @@ def list_tasks(request: Request,
 
 
 @router.post("/emergency_stop")
-def emergency_stop():
+def emergency_stop(request: Request):
     """紧急停止：清空任务队列（排队任务全部 canceled）+ 冻结 Ghost。
 
     冻结生效后 start/resume/execute_action/宏重放一律 503 GHOST_FROZEN；
     正在跑的任务在下一个步骤边界安全点停止（绝不切断进行中的输入）。
     解冻：POST /api/ghost/emergency_stop/release。
     """
+    # v0.7.1 审计归因：谁按的急停（token 指纹/来源地址）必须可追溯
+    authz.bind_request(request)
+    audit_sink.write("emergency_stop", detail="queue cleared + frozen")
     return {"ok": True, **task_queue.freeze()}
 
 
 @router.post("/emergency_stop/release")
-def emergency_stop_release():
+def emergency_stop_release(request: Request):
+    authz.bind_request(request)
+    audit_sink.write("emergency_release", detail="frozen cleared; dispatch resumed")
     task_queue.release()
     return {"ok": True, "frozen": False}

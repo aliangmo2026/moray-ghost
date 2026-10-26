@@ -42,6 +42,8 @@ H = {"X-Ghost-Token": ""}
 for line in (ROOT / ".env").read_text(encoding="utf-8").splitlines():
     if line.strip().startswith("GHOST_TOKEN="):
         H["X-Ghost-Token"] = line.split("=", 1)[1].strip()
+# v0.7 能力令牌（最小权限）：主仓标准对接必须声明可触碰窗口白名单（本演示=自建记事本）
+CAPS = {"capabilities": {"allowed_windows": ["notepad.exe"]}}
 
 OWNED: set = set()
 
@@ -99,6 +101,17 @@ def open_notepad(owned_before: set, x: int, y: int) -> int:
     return hwnd
 
 
+def raise_topmost(hwnd: int) -> None:
+    """重抬 TOPMOST（v0.7.1 补）：现代记事本启动初期的 Z 序会让初始 TOPMOST
+    被用户窗口压过——录制阶段已有『重抬后重试』实证有效，重放阶段对齐同一姿势。"""
+    try:
+        win32gui.SetWindowPos(hwnd, win32con.HWND_TOPMOST, 0, 0, 0, 0,
+                              win32con.SWP_NOMOVE | win32con.SWP_NOSIZE)
+    except Exception:  # noqa: BLE001
+        pass
+    time.sleep(0.3)
+
+
 def close_owned(hwnd: int) -> None:
     try:
         win32gui.PostMessage(hwnd, win32con.WM_CLOSE, 0, 0)
@@ -143,7 +156,7 @@ def main() -> int:
         r = requests.post(f"{BASE}/execute_action", headers=H,
                           json={"action": "click", "x": click_pt[0],
                                 "y": click_pt[1], "hwnd": hwnd1,
-                                "settle_seconds": 0.3}, timeout=60)
+                                "settle_seconds": 0.3, **CAPS}, timeout=60)
         try:
             body = r.json()
         except Exception:  # noqa: BLE001
@@ -168,7 +181,8 @@ def main() -> int:
             close_owned(h)
         return 1
     requests.post(f"{BASE}/execute_action", headers=H,
-                  json={"action": "hotkey", "text": "esc", "settle_seconds": 0.1},
+                  json={"action": "hotkey", "text": "esc", "settle_seconds": 0.1,
+                        "hwnd": hwnd1, **CAPS},
                   timeout=30)
     close_owned(hwnd1)
 
@@ -180,12 +194,14 @@ def main() -> int:
     rect2 = wl.get_rect(hwnd2)
     editor2 = [rect2[0] + 400, rect2[1] + 300]
     btn2 = [rect2[0] + 60, rect2[1] + 86]
+    raise_topmost(hwnd2)  # 重放前确保 #2 真的在用户窗口之上（防 Z 序竞态）
 
     # ============ 第二步：下发任务 ============
     banner("第二步 POST /api/ghost/task —— 下发多步任务（macro + 中文输入 + wait + vision）")
     r = requests.post(f"{BASE}/task", headers=H, json={
         "task_id": "mock_moray_task_" + str(int(time.time())),
         "goal": "在记事本里输入中文并点击文件按钮（模拟主仓业务）",
+        **CAPS,
         "steps": [
             {"kind": "macro", "macro_id": macro_id, "hwnd": hwnd2},
             {"kind": "action", "payload": {"action": "type",
@@ -237,6 +253,7 @@ def main() -> int:
         else:
             print("[主仓处置] 其他失败类：等待后 resume 重试", flush=True)
             time.sleep(1.0)
+        raise_topmost(hwnd2)  # 每轮重试前重抬：遮挡/竞态类失败的确定性恢复
         r = requests.post(f"{BASE}/task/{task_id}/resume", headers=H, timeout=30)
         show(r, "resume")
     else:

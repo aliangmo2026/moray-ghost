@@ -11,11 +11,11 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.core import action_log, browser_driver, task_queue
+from app.core import action_log, authz, browser_driver, task_queue
 from app.core import controller
 
 LOG = logging.getLogger("moray-ghost.browser")
@@ -55,7 +55,15 @@ def list_tabs() -> Dict[str, Any]:
 
 
 @router.post("/browser/action")
-def browser_action(body: BrowserActionBody) -> Dict[str, Any]:
+def browser_action(body: BrowserActionBody, request: Request) -> Dict[str, Any]:
+    # v0.7.1 身份上下文 + 生产环境输入源过滤（CDP 通道与原生通道同一门禁）
+    authz.bind_request(request)
+    try:
+        authz.assert_action_source()
+    except authz.SourceDenied as exc:
+        action_log.record("cdp", body.op, _detail_of(body), False, 403)
+        return JSONResponse(status_code=403, content={
+            "ok": False, "error": "SOURCE_DENIED", "detail": str(exc)})
     # 冻结门禁（与 execute_action 同级）；被拒也入账（驾驶舱全程可见）
     if task_queue.is_frozen():
         action_log.record("cdp", body.op, _detail_of(body), False, 503)

@@ -46,6 +46,8 @@ RESULTS: list = []
 OWNED: set = set()          # 本脚本创建并负责销毁的 hwnd
 TMP_FILES: list = []
 DX, DY, TW_B, TH_B = (12, 62, 96, 48)  # Win11 新记事本"文件"按钮相对窗口偏移
+# v0.7 能力令牌（最小权限）：GUI 靶子全部是自建记事本（notepad.exe）
+CAPS = {"capabilities": {"allowed_windows": ["notepad.exe"]}}
 
 
 def check(name: str, ok: bool, detail: str = "") -> bool:
@@ -57,7 +59,7 @@ def check(name: str, ok: bool, detail: str = "") -> bool:
 
 def action(payload: dict):
     return requests.post("http://127.0.0.1:8030/api/ghost/execute_action", headers=H,
-                         json=payload, timeout=60)
+                         json={**CAPS, **payload}, timeout=60)
 
 
 def record_start(payload: dict):
@@ -73,7 +75,7 @@ def record_stop(payload: dict):
 def replay(macro_id: str, payload: dict):
     return requests.post(
         f"http://127.0.0.1:8030/api/ghost/macro/{macro_id}/replay", headers=H,
-        json=payload, timeout=120)
+        json={**CAPS, **payload}, timeout=120)
 
 
 def get_macro(macro_id: str):

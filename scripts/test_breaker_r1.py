@@ -42,6 +42,8 @@ for line in (ROOT / ".env").read_text(encoding="utf-8").splitlines():
 RESULTS: list = []
 OWNED: set = set()
 CLICK_LOG: list = []   # (payload, status, body摘要)
+# v0.7 能力令牌（最小权限）：GUI 靶子全部是自建记事本（notepad.exe）
+CAPS = {"capabilities": {"allowed_windows": ["notepad.exe"]}}
 
 
 def check(name: str, ok: bool, detail: str = "") -> bool:
@@ -53,7 +55,7 @@ def check(name: str, ok: bool, detail: str = "") -> bool:
 
 def action(payload: dict):
     r = requests.post("http://127.0.0.1:8030/api/ghost/execute_action", headers=H,
-                      json=payload, timeout=60)
+                      json={**CAPS, **payload}, timeout=60)
     try:
         body = r.json()
     except Exception:  # noqa: BLE001
@@ -104,7 +106,7 @@ def main() -> int:
     r = requests.post("http://127.0.0.1:8030/api/ghost/execute_action", headers=H,
                       json={"action": "click", "x": rect[0] + 400,
                             "y": rect[1] + 300, "hwnd": hwnd1,
-                            "settle_seconds": 0.1}, timeout=30)
+                            "settle_seconds": 0.1, **CAPS}, timeout=30)
     print(f"(激活 click) {r.status_code}", flush=True)
 
     # 干扰窗口开启提示（用户看到后开始拖动/切前台/遮挡）
@@ -138,7 +140,8 @@ def main() -> int:
     ]
     r = requests.post("http://127.0.0.1:8030/api/ghost/task", headers=H,
                       json={"task_id": "task_r1_" + str(int(time.time())),
-                            "goal": "混乱环境对抗", "steps": steps}, timeout=30)
+                            "goal": "混乱环境对抗", **CAPS,
+                            "steps": steps}, timeout=30)
     print(f"(POST /task) {r.status_code} {r.json()}", flush=True)
     t_start = time.time()
     tid = r.json().get("task_id")

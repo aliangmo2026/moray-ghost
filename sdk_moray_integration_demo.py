@@ -47,7 +47,8 @@ def check(name: str, ok: bool, detail: str = "") -> bool:
 
 def main() -> int:
     ok_all = True
-    client = GhostClient(agent_id="main-repo-demo")   # 主仓 Agent 的专属身份
+    client = GhostClient(agent_id="main-repo-demo",   # 主仓 Agent 的专属身份
+                         allowed_windows=["notepad.exe"])  # v0.7 最小权限令牌
     hwnds_snapshot = {w["hwnd"] for w in wl.list_windows()}
 
     print("== 主仓 Agent 接管演示（SDK only，Ghost 是唯一输入通道）==", flush=True)

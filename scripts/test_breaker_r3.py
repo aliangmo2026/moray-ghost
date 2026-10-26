@@ -88,6 +88,7 @@ def main() -> int:
         ]
         r = requests.post("http://127.0.0.1:8030/api/ghost/task", headers=H,
                           json={"task_id": tid, "goal": f"并发测试 {i}",
+                                "capabilities": {"allowed_windows": ["notepad.exe"]},
                                 "steps": steps}, timeout=30)
         ok_all &= check(f"R3-{i}a: POST /task {tid} → 201", r.status_code == 201,
                         str(r.json())[:80])

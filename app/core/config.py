@@ -17,10 +17,21 @@ ENV_PATH = BASE_DIR / ".env"
 load_dotenv(ENV_PATH)
 
 SERVICE = "moray-ghost"
-VERSION = "0.6.0"
+VERSION = "0.7.1"
 
 HOST = os.getenv("GHOST_HOST", "127.0.0.1")
 PORT = int(os.getenv("GHOST_PORT", "8030"))
+
+# 运行环境标识（v0.7.1）：dev（默认，宽松，本地联调/旧测试行为不变）/
+# production（生产：动作必须来自带 Token 的合法 HTTP 调用链，否则 403 SOURCE_DENIED）。
+ENV_MODE = os.getenv("GHOST_ENV", "dev").strip().lower() or "dev"
+IS_PRODUCTION = ENV_MODE in ("production", "prod")
+
+# 全局急停热键（v0.7.1）：系统级、按下一键进程退出；留空禁用。
+ESTOP_HOTKEY = os.getenv("GHOST_ESTOP_HOTKEY", "ctrl+alt+q").strip().lower()
+
+# 结构化审计落盘（v0.7.1）：JSON Lines，一行一事件，供安全审计追溯。
+AUDIT_PATH = DATA_DIR / "ghost_audit.jsonl"
 
 # CDP 浏览器接管（v0.6 M2）：仅允许 loopback 调用点（browser_driver 使用前再校验一次）
 BROWSER_CDP_URL = os.getenv("GHOST_BROWSER_CDP_URL", "http://127.0.0.1:9222").strip()

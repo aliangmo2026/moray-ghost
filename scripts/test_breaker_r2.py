@@ -42,6 +42,8 @@ for line in (ROOT / ".env").read_text(encoding="utf-8").splitlines():
         H["X-Ghost-Token"] = line.split("=", 1)[1].strip()
 RESULTS: list = []
 SEARCH_REL = (705, 246)   # 新标签页页面搜索框，相对窗口左上（校准图实测）
+# v0.7 能力令牌（最小权限）：本套件 GUI 靶子是自建 Edge 窗口（msedge.exe）
+CAPS = {"capabilities": {"allowed_windows": ["msedge.exe"]}}
 
 
 def check(name: str, ok: bool, detail: str = "") -> bool:
@@ -55,7 +57,7 @@ def edge_execute(payload: dict, hwnd: int):
     p = dict(payload)
     p["hwnd"] = hwnd
     r = requests.post("http://127.0.0.1:8030/api/ghost/execute_action", headers=H,
-                      json=p, timeout=60)
+                      json={**CAPS, **p}, timeout=60)
     try:
         body = r.json()
     except Exception:  # noqa: BLE001
@@ -250,7 +252,7 @@ def main() -> int:
 def replay(macro_id: str, hwnd: int):
     return requests.post(
         f"http://127.0.0.1:8030/api/ghost/macro/{macro_id}/replay", headers=H,
-        json={"hwnd": hwnd}, timeout=60)
+        json={"hwnd": hwnd, **CAPS}, timeout=60)
 
 
 if __name__ == "__main__":

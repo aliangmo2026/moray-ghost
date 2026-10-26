@@ -1,6 +1,12 @@
 # moray-ghost
 
-Windows 桌面自动化本地服务（v0.5.0）：**mss 极速截图 + 授权式 pyautogui 动作 + 宏录制/安全重放 + 任务生命周期 + 环境感知 + 视觉反哺 Heal + 多 Agent 任务队列 + Web 监控面板 + 官方 Python SDK**。
+![version](https://img.shields.io/badge/version-0.7.1-blue)
+![python](https://img.shields.io/badge/python-3.12.2-3776AB?logo=python&logoColor=white)
+![platform](https://img.shields.io/badge/platform-Windows%2010%20%2F%2011-0078D6)
+![regression](https://img.shields.io/badge/regression-237%20checks%20passed-brightgreen)
+![audit](https://img.shields.io/badge/audit-JSONL%20%2B%20token%20fingerprint-lightgrey)
+
+Windows 桌面自动化本地服务（v0.7.1）：**mss 极速截图 + 授权式 pyautogui 动作 + 宏录制/安全重放 + 任务生命周期 + 环境感知 + 视觉反哺 Heal + 多 Agent 任务队列 + Web 监控面板 + 官方 Python SDK + v0.7 绝对防御（三道门禁 + 能力令牌 + 后置断言）+ v0.7.1 企业级安全（单实例互斥 / 全局急停热键 / 生产输入源过滤 / JSONL 审计 / 异常清道夫）**。
 
 只监听 `127.0.0.1:8030`；绝不触碰 `D:\MoRay`（主仓）。
 
@@ -12,6 +18,27 @@ Windows 桌面自动化本地服务（v0.5.0）：**mss 极速截图 + 授权式
 > **v0.5 平台化**：Ghost 升级为"所有 Agent 通用的桌面操控底座"——
 > 任务级 FIFO 队列 + `X-Agent-Id` 状态隔离 + emergency stop 冻结 + `/dashboard`
 > 监控面板 + `sdk/` 官方 Python 客户端（其他 Agent 零门槛接入，见 [sdk/README.md](sdk/README.md)）。
+>
+> **⚠️ v0.7 绝对防御（先上锁，再跑车）**：任何会打进窗口的输入必须携带能力令牌
+> `capabilities.allowed_windows`（最小权限，缺失/越权 → 403 CAPABILITY_DENIED /
+> 400 CAPABILITIES_REQUIRED）；窗口黑名单（cmd/powershell/pwsh/regedit/
+> WindowsTerminal/conhost + 标题含 UAC/格式化/删除）与键盘黑名单（win 系热键 /
+> ctrl+shift+esc / format·shutdown·格式化等破坏性文本）最高优先级拦截 →
+> 403 HIGH_RISK_WINDOW / HIGH_RISK_INPUT；task 步骤可带 `post_assert` 后置断言
+> （窗口标题 / cv2 锚点模板 / OCR 字样），断言未过 → 立刻 degraded 挂起并明示
+> "指令可能错误"（防大模型幻觉）。拦截验证：`scripts/test_v07_redline.py` 40/40。
+>
+> **⚠️ v0.7.1 企业级安全与开源标准（物理级绝对控制）**：
+> ① **单实例互斥**——启动即抢 Windows 命名互斥体 `Global\MorayGhostSingleInstance`
+> + 端口预检，本机永远只能跑一个 Ghost（第二实例直接 `FATAL` 退出，锁随进程消亡
+> 自动释放、无僵尸）；② **全局急停热键 Ctrl+Alt+Q**——`keyboard` 系统级钩子，
+> 一按立刻释放全部按键鼠标 + 审计落盘 + `os._exit(1)`（网页大红按钮点不到时的
+> 物理逃生口）；③ **`GHOST_ENV=production` 输入源过滤**——任何不来自带 Token 的
+> 合法 HTTP 调用链（或其派发的任务）的动作一律 403 `SOURCE_DENIED`，进程内旁路
+> 裸调 `run_action` 也被拒且零位移；④ **结构化审计**——每次动作/急停/清场写
+> `data/ghost_audit.jsonl`（JSON Lines：何时 / 谁 / 哪个 token 指纹 / 坐标明细，
+> 绝不落 token 原文）；⑤ **异常清道夫**——任务失败/取消/崩溃强制释放按键鼠标 +
+> 线程盘点入审计（零杂散线程）。验收：`scripts/test_v071_security.py` **37/37**。
 
 ## ⚠️ 测试纪律红线（所有脚本强制执行，违反即事故）
 
@@ -26,7 +53,45 @@ Windows 桌面自动化本地服务（v0.5.0）：**mss 极速截图 + 授权式
 4. **关闭验证只认"自己开的 hwnd 已消失"**，不得以"桌面上没有 XX 窗口了"作为通过依据。
 5. **证据链**：测试输出必须打印自己创建的 hwnd 及其销毁结果；不得引用/展示用户窗口内容。
 
-## 架构总览（v0.5.0）
+## 架构总览
+
+### 架构图（Mermaid：主仓 → SDK → API → 执行器 → 物理层）
+
+```mermaid
+flowchart TB
+    subgraph MAIN["主仓 / 任意 Agent（Iris 视觉 + 任务规划）"]
+        M["业务编排 · 视觉识图 · 指令生成"]
+    end
+    subgraph SDK["SDK 层 · sdk/ GhostClient（仅依赖 requests）"]
+        S["task · action · macro · window · system<br/>X-Ghost-Token 鉴权 · X-Agent-Id 队列归属"]
+    end
+    subgraph API["API 层 · FastAPI @127.0.0.1:8030 · /api/ghost/*"]
+        MW["token 中间件 → 身份上下文（token 指纹/来源地址/agent）<br/>冻结门禁 GHOST_FROZEN · 环境门禁 SYSTEM_NOT_READABLE<br/>v0.7.1 生产输入源过滤 → 403 SOURCE_DENIED"]
+    end
+    subgraph EXEC["执行器层"]
+        TQ["task_queue · FIFO 单调度线程（串行上桌面）"]
+        TR["task_runner · 状态机 + capabilities 注入 + post_assert 防幻觉"]
+        CT["controller.run_action · 唯一动桌面咽喉<br/>全局串行锁 · 坐标/漂移/Fail-Safe 防线<br/>v0.7 三道门禁（窗口黑名单 / 键盘黑名单 / 能力令牌）"]
+        EST["estop 急停热键 Ctrl+Alt+Q · janitor 异常清道夫"]
+    end
+    subgraph PHYS["物理层"]
+        PY["pyautogui 输入原语（按键/鼠标强制释放）"]
+        MS["mss 单线程抓屏（BitBlt 收口）"]
+        W32["win32 窗口定位 / 黑名单进程解析"]
+        KB["keyboard 系统级键盘钩子"]
+    end
+    AUD[("结构化审计<br/>data/ghost_audit.jsonl")]
+    M -->|"sdk.GhostClient · HTTP + Token"| S --> API
+    API --> TQ --> TR --> CT
+    CT --> PY
+    CT --> MS
+    CT --> W32
+    EST --> KB
+    CT -.->|"每次动作/拒绝入账"| AUD
+    EST -.->|"急停事件入账"| AUD
+```
+
+### 分层细节（文本版）
 
 ```
 主仓 / 任意 Agent（Iris 视觉 + 任务规划）
@@ -44,13 +109,17 @@ HTTP 层   FastAPI @ 127.0.0.1:8030，全部接口挂 /api/ghost/ 前缀
    │      emergency stop：清空队列 + 冻结（/dashboard 同款大按钮）
    ▼
 任务执行器  app/core/task_runner.py
-   │      步骤：action / macro / wait / require_vision
+   │      步骤：action / macro / wait / require_vision（v0.7：capabilities 强制注入 +
+   │      post_assert 后置断言——断言未过 → degraded「指令可能错误」，防幻觉）
    │      任一步失败 → degraded 挂起（fail 快照 + 现场截图，等主仓处置）→ resume 从失败步重排队
    ▼
-统一安全管道  app/core/controller.py
+统一安全管道  app/core/controller.py + safety_gate.py（v0.7 绝对防御）
    │      全局动作串行锁 · 坐标防线（越界/Fail-Safe 角点/漂移>3px） · Fail-Safe 常开 · 前后审计截图
    │      v0.6：drag 平滑轨迹（起点+终点归属门禁、逐点 Fail-Safe、finally 强制释放鼠标键）
    │            scroll 平滑分片（作用点归属门禁） · 动作日志入账点（input_audit 同咽喉）
+   │      v0.7：窗口黑名单（cmd/Terminal/UAC/格式化/删除…→ 403 HIGH_RISK_WINDOW，锁前早杀+锁内落点复核）
+   │            键盘黑名单（win 系热键/format/shutdown…→ 403 HIGH_RISK_INPUT）
+   │            能力令牌（目标进程 ∉ allowed_windows → 403 CAPABILITY_DENIED，最小权限）
    ▼
 执行后端  backend.py（pyautogui 输入 + mouse_down/up/scroll 原语）
    │      screen_mss.py（mss 单线程抓屏） · window_locator.py（win32）
@@ -94,6 +163,30 @@ HTTP 层   FastAPI @ 127.0.0.1:8030，全部接口挂 /api/ghost/ 前缀
   new mss（GDI 句柄泄漏）"红线；`monitors()` 枚举保留 thread-local 缓存。
 - **token 来源**：只从 `.env`/环境变量读取；缺失时首次启动生成随机 token 写回
   `.env`（已 gitignore），源码与示例中不含可用凭据。
+- **单实例互斥（v0.7.1）**：`run.py` 启动先抢 Windows 命名互斥体
+  `Global\MorayGhostSingleInstance`（`CreateMutexW`，机器级唯一）+ 8030 端口预检，
+  任一被占直接 `FATAL` 报错退出——本机永远只有一个 Ghost 持有桌面输入；互斥体
+  句柄随进程消亡由内核自动释放，强杀也不会留下僵尸锁。`app/main.py` lifespan
+  兜底（直接 `uvicorn app.main:app` 启动同样受门禁）。
+- **全局急停热键（v0.7.1）**：`keyboard` 系统级钩子注册 **Ctrl+Alt+Q**
+  （`GHOST_ESTOP_HOTKEY` 可改，留空禁用；不抑制组合键、不影响其他程序），
+  按下即：强制释放全部按键与鼠标键 → 审计同步落盘 `estop_hotkey` →
+  `os._exit(1)` 进程级退出（绝对服从物理断电）。注册失败只告警不阻断服务。
+- **生产环境输入源过滤（v0.7.1）**：`GHOST_ENV=production` 时，动作必须来自
+  带 Token 的合法 HTTP 调用链（中间件写入的身份上下文，`source=http_api`）或
+  其派发的任务队列（`source=task_queue`）；进程内裸调 `run_action` 等旁路一律
+  403 `SOURCE_DENIED`（先于一切校验、零位移）。默认 `dev` 宽松，旧联调行为不变。
+- **结构化审计落盘（v0.7.1）**：`data/ghost_audit.jsonl`——一行一个 JSON 对象
+  （`service_start/stop`、`action` 成功与被拒、`emergency_stop/release`、
+  `estop_hotkey`、`sweep`、`task_end`），动作记录带身份三元组：何时（ts）、
+  谁（client 来源地址 + agent_id）、用什么 Token（`token_fp` = sha256 前 12 位
+  指纹，**绝不落 token 原文**）；单文件 10MB 自动轮转；线程安全、写失败只告警
+  不打断业务。
+- **异常线程清道夫（v0.7.1）**：任务失败/degraded/取消/崩溃 → `janitor.sweep`
+  强制释放全部按键鼠标（`release_all_modifiers` + `release_pointer_buttons`，
+  幂等）+ 线程盘点（与启动基线比对，杂散线程名单入审计）；controller 动作级
+  失败路径（Fail-Safe / ActionError / 未预期异常）同样清场——绝不把"按住"状态
+  泄漏给系统。
 
 ## 快速开始
 
@@ -101,9 +194,14 @@ HTTP 层   FastAPI @ 127.0.0.1:8030，全部接口挂 /api/ghost/ 前缀
 .\start.ps1                                   # 首次运行自动建 .venv 装依赖并启动
 .venv\Scripts\python scripts\smoke.py         # 冒烟：health / screenshot / 401 / macro 占位
 .venv\Scripts\python scripts\smoke.py --failsafe   # 追加：Fail-Safe 409 现场测试
+.venv\Scripts\python scripts\test_v071_security.py # v0.7.1 安全验收（互斥/热键/审计/生产过滤）
 ```
 
 冒烟脚本会把鼠标甩到屏幕左上角再还原（`--failsafe` 时）；`--no-click` 可跳过真实点击。
+
+> **急停**：网页 `/dashboard` 大红按钮，或随时按 **Ctrl+Alt+Q**（系统级热键，
+> 一按进程立刻退出并释放全部按键鼠标）。**单实例**：重复启动第二个实例会直接
+> `FATAL` 退出（互斥体 + 端口双门禁）。
 
 ## 接口契约（v0.2）
 
@@ -147,6 +245,8 @@ query：`monitor=1|0|all`（0=全屏联合区，all=各屏数组）、`fmt=png|j
   ("physical"|"scaled"), resolved_physical, monitor, monitor_origin,
   before_screenshot_path, after_screenshot_path, elapsed_ms, after_image_b64, before_image_b64?}`
 - 401 `UNAUTHORIZED`：token 缺失/错误
+- 403 `SOURCE_DENIED`：`GHOST_ENV=production` 且动作不来自带 Token 的 HTTP 调用链
+  （进程内旁路裸调才会命中；正常 SDK/HTTP 调用不受影响）
 - 400 `SAFETY_BLOCKED`：坐标越界 / 落入 Fail-Safe 角落 / 鼠标漂移 >3px
 - 409 `FAIL_SAFE_TRIGGERED`：用户甩鼠标到角落，附 `scene_screenshot_path` +
   `scene_image_b64` 现场截图
@@ -274,18 +374,24 @@ app/api/dashboard_routes.py /dashboard 页面 + /dashboard/state（v0.5）
 app/api/macro_routes.py     /macro/*（501 占位 + 只读列表/详情）
 app/core/task_queue.py      任务 FIFO 调度器 + Agent 队列 + 冻结状态机（v0.5）
 app/core/task_runner.py     任务状态机（created→queued→running→…）
-app/core/config.py          .env、常量、DB 路径
+app/core/config.py          .env、常量、DB 路径（v0.7.1：GHOST_ENV / 急停热键 / 审计路径）
 app/core/screen_mss.py      thread-local mss + DPI + 编码
 app/core/backend.py         InputBackend 抽象 + PyAutoGUIBackend
-app/core/controller.py      统一安全管道（锁 + Fail-Safe + 前后截图）
+app/core/controller.py      统一安全管道（锁 + Fail-Safe + 前后截图 + v0.7.1 输入源门禁）
 app/core/auth.py            token 校验（静态 + HMAC Intent Token 可开关）
+app/core/single_instance.py v0.7.1 单实例命名互斥体 + 端口预检（防多开）
+app/core/authz.py           v0.7.1 调用来源/身份上下文 + 生产输入源过滤（SOURCE_DENIED）
+app/core/audit_sink.py      v0.7.1 结构化审计落盘（data/ghost_audit.jsonl，token 指纹）
+app/core/janitor.py         v0.7.1 异常清道夫（失败/取消释放按键鼠标 + 线程盘点）
+app/core/estop.py           v0.7.1 全局急停热键 Ctrl+Alt+Q（释放输入 → 审计 → os._exit）
 app/core/macro_store.py     SQLite 读写 + schema 初始化
 app/core/macro_runner.py    重放骨架（v0.3 落地）
 sdk/                        官方 Python SDK（GhostClient，仅依赖 requests）
 sdk_example.py              SDK 全链路演示
+scripts/test_v071_security.py  v0.7.1 安全验收：互斥/审计/热键/生产过滤（37 checks）
 scripts/test_v050_platform.py  v0.5 验收：队列/隔离/冻结/面板/SDK（零 GUI 靶子）
 scripts/smoke.py            冒烟：health / screenshot / 401 / click / failsafe / macro
-run.py  start.ps1  .env.example  requirements.txt
+run.py  start.ps1  .env.example  requirements.txt（v0.7.1 全部 == 锁定）
 ```
 
 ## 已知限制（v0.5.0）

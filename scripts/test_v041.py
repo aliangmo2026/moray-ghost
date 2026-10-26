@@ -112,9 +112,13 @@ def force_foreground(hwnd: int) -> bool:
     return win32gui.GetForegroundWindow() == hwnd
 
 
+# v0.7 能力令牌（最小权限）：GUI 靶子全部是自建记事本（notepad.exe）
+CAPS = {"capabilities": {"allowed_windows": ["notepad.exe"]}}
+
+
 def action(payload: dict):
     r = requests.post("http://127.0.0.1:8030/api/ghost/execute_action", headers=H,
-                      json=payload, timeout=60)
+                      json={**CAPS, **payload}, timeout=60)
     try:
         body = r.json()
     except Exception:  # noqa: BLE001

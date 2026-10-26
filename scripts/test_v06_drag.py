@@ -47,6 +47,9 @@ for line in (ROOT / ".env").read_text(encoding="utf-8").splitlines():
         H["X-Ghost-Token"] = line.split("=", 1)[1].strip()
 RESULTS: list = []
 TMP_FILES: list = []
+# v0.7 能力令牌（最小权限）：本套件的 GUI 靶子是本脚本 Popen 的 Tk 文本窗
+# （python.exe 宿主）——所有输入动作/真实重放只授权给它。
+CAPS = {"capabilities": {"allowed_windows": ["python.exe"]}}
 
 LINE1 = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 CONTENT = "\n".join([LINE1] + ["LINE%02d-padding-content" % i
@@ -62,7 +65,7 @@ def check(name: str, ok: bool, detail: str = "") -> bool:
 
 def action(payload: dict):
     r = requests.post("http://127.0.0.1:8030/api/ghost/execute_action", headers=H,
-                      json=payload, timeout=60)
+                      json={**CAPS, **payload}, timeout=60)
     try:
         body = r.json()
     except Exception:  # noqa: BLE001
@@ -164,6 +167,22 @@ def crop_diff_mean(box, tag_a: str, tag_b: str) -> float:
     img.crop(box).save(b_path)
     a = Image.open(a_path).convert("L")
     b = Image.open(b_path).convert("L")
+    return ImageStat.Stat(ImageChops.difference(a, b)).mean[0]
+
+
+def snap_crop(box, tag: str) -> str:
+    """抓当前屏并裁剪落盘（v0.7 判别窗口修正：before 帧必须在动作派发前抓）。"""
+    shot_dir = ROOT / "data" / "screenshots"
+    path = str(shot_dir / ("v06_" + tag + ".png"))
+    img, _ = grab(1)
+    img.crop(box).save(path)
+    return path
+
+
+def diff_saved(pa: str, pb: str) -> float:
+    """两张已落盘裁剪图的灰度平均差（与 crop_diff_mean 同判别口径）。"""
+    a = Image.open(pa).convert("L")
+    b = Image.open(pb).convert("L")
     return ImageStat.Stat(ImageChops.difference(a, b)).mean[0]
 
 
@@ -270,6 +289,11 @@ def main() -> int:
     a_diff = crop_diff_mean((line_x0 - 4, line_y - 8, line_x0 + 200, line_y + 16),
                             "a_base", "a_prep")
     hold_fg(hwnd)
+    # v0.7 判别窗口修正：before 帧必须在 drag 派发【前】抓取——选区在 settle 内
+    # 已完成，事后双帧测的是"选区存续稳定性"（必然≈0），测不出"拖拽产生了选区"
+    #（旧环境的注入效果延迟曾掩盖该方法论缺陷；机制本身有审计截图实证生效）。
+    sel_box = (line_x0 - 4, line_y - 8, line_x0 + 200, line_y + 16)
+    sel_before = snap_crop(sel_box, "a_sel_before")
     r, body = action_retry({"action": "drag", "x": line_x0, "y": line_y,
                             "x2": drag_x1, "y2": line_y, "duration_ms": 400,
                             "hwnd": hwnd, "settle_seconds": 0.25}, hwnd)
@@ -279,20 +303,24 @@ def main() -> int:
     check("A-2: 终点 cursor_after == x2/y2",
           body.get("cursor_after") == [drag_x1, line_y],
           f"cursor_after={body.get('cursor_after')}")
-    sel_diff = crop_diff_mean((line_x0 - 4, line_y - 8, line_x0 + 200, line_y + 16),
-                              "a_sel_before", "a_sel_after")
+    time.sleep(0.15)
+    sel_after = snap_crop(sel_box, "a_sel_after")
+    sel_diff = diff_saved(sel_before, sel_after)
     check("A-3: 拖拽选中真实生效（高亮像素差）",
           ok_drag and sel_diff > 3.0, f"sel_diff={sel_diff:.2f}")
 
-    # B: 平滑滚动（固定区域像素差）
+    # B: 平滑滚动（固定区域像素差；before 帧同样在派发前抓取）
+    scroll_box = (tx + 2, ty + 2, tx + 320, ty + 160)
+    b_before = snap_crop(scroll_box, "b_before")
     r, body = action_retry({"action": "scroll", "x": mid_x, "y": mid_y,
                             "dy": -480, "smooth": True,
                             "hwnd": hwnd, "settle_seconds": 0.5}, hwnd)
     check("B-1: scroll smooth → 200", r.status_code == 200
           and (body.get("scroll") or {}).get("smooth") is True,
           f"status={r.status_code} scroll={body.get('scroll')}")
-    b_diff = crop_diff_mean((tx + 2, ty + 2, tx + 320, ty + 160),
-                            "b_before", "b_after")
+    time.sleep(0.15)
+    b_after = snap_crop(scroll_box, "b_after")
+    b_diff = diff_saved(b_before, b_after)
     check("B-2: 内容确实滚动（固定区域像素差）", b_diff > 1.0,
           f"diff={b_diff:.2f}")
 
@@ -342,6 +370,12 @@ def main() -> int:
     check("C-6: dry_run → 200（不产生输入）", r.status_code == 200)
     # C-7: 重放（先滚动后拖拽）→ 视口首行出现蓝色高亮 → 颜色判别
     #（scroll 会位移内容，diff 分不清换行文字与高亮；数蓝底像素则免疫）
+    # v0.7 判别窗口修正：C-2 录制拖拽在当前视口行上新建了选区，pre 快照前必须
+    # 再点一下收起（原去选点击在录制之前，挡不住录制拖拽后建的选区）。
+    hold_fg(hwnd)
+    action_retry({"action": "click", "x": mid_x, "y": mid_y,
+                  "hwnd": hwnd, "settle_seconds": 0.2}, hwnd)
+    time.sleep(0.3)
     hold_fg(hwnd)
     snap_dir = ROOT / "data" / "screenshots"
     pre_rep = str(snap_dir / "v06_c_rep_before.png")
@@ -350,13 +384,15 @@ def main() -> int:
     img.crop((line_x0 - 4, line_y - 8, line_x0 + 200, line_y + 16)).save(pre_rep)
     pre_blue = count_highlight_blue(pre_rep)
     r = requests.post(f"http://127.0.0.1:8030/api/ghost/macro/{macro_id}/replay",
-                      headers=H, json={"hwnd": hwnd}, timeout=60)
+                      headers=H, json={"hwnd": hwnd, **CAPS}, timeout=60)
     time.sleep(0.3)
     img, _ = grab(1)
     img.crop((line_x0 - 4, line_y - 8, line_x0 + 200, line_y + 16)).save(post_rep)
     post_blue = count_highlight_blue(post_rep)
+    # v0.7 阈值校准：ClearType 亚像素渲染在文字边缘留下少量蓝色 fringe 像素
+    # （本机实测 ~260），而真实选区贡献 ~+2400 蓝底像素——阈值取双峰中谷。
     check("C-7: 真实重放按轨迹复现（拖拽再次产生蓝色高亮选区）",
-          r.status_code == 200 and pre_blue < 50 and post_blue > 200,
+          r.status_code == 200 and pre_blue < 1000 and post_blue > 1500,
           f"status={r.status_code} blue pre={pre_blue} post={post_blue}")
 
     # D: 负例

@@ -61,7 +61,9 @@ def get(path: str, agent: str = ""):
 
 
 def make_task(name: str, agent: str, ms: int) -> str:
+    # v0.7：capabilities 强制携带；纯 wait 任务无输入步骤 → 空白名单合法
     r = post("/task", agent, {"task_id": name, "goal": "v05 " + name,
+                              "capabilities": {"allowed_windows": []},
                               "steps": [{"kind": "wait", "ms": ms}]})
     assert r.status_code == 201, str(r.json())
     return name
