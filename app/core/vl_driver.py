@@ -320,7 +320,11 @@ def _get_llama():
             try:
                 _llama_model = Llama(
                     model_path=config.VL_MODEL_PATH,
+                    # v0.8.1：多模态投影器（Qwen2-VL 等视觉模型必需）；
+                    # 未配置时交给 llama.cpp 自动发现（模型同目录 mmproj-*.gguf）。
+                    clip_model_path=config.VL_MMPROJ_PATH or None,
                     n_ctx=4096, n_threads=os.cpu_count() or 4,
+                    n_gpu_layers=config.VL_N_GPU_LAYERS,
                     verbose=False)
             except Exception as exc:  # noqa: BLE001
                 raise VLBackendUnavailable(

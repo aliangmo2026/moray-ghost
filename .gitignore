@@ -5,3 +5,6 @@ data/
 logs/
 *.db
 .mimosa/
+# 模型权重永不入库（本地部署物，见 docs/MCP_接入指南.md 下载指引）
+models/
+*.gguf

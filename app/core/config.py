@@ -17,7 +17,7 @@ ENV_PATH = BASE_DIR / ".env"
 load_dotenv(ENV_PATH)
 
 SERVICE = "moray-ghost"
-VERSION = "0.8.0"
+VERSION = "0.8.1"
 
 HOST = os.getenv("GHOST_HOST", "127.0.0.1")
 PORT = int(os.getenv("GHOST_PORT", "8030"))
@@ -57,6 +57,10 @@ WATCHDOG_ENABLED = os.getenv("GHOST_WATCHDOG", "true").strip().lower() in (
 VL_BACKEND = os.getenv("GHOST_VL_BACKEND", "auto").strip().lower() or "auto"
 # 真实 VL 模型权重（GGUF，如 Qwen2-VL-2B / MiniCPM-V）；空 = 未接入（auto 降级）。
 VL_MODEL_PATH = os.getenv("GHOST_VL_MODEL_PATH", "").strip()
+# 多模态投影器（mmproj GGUF，llama.cpp 视觉必需，与模型配套下载）；空=未配视觉。
+VL_MMPROJ_PATH = os.getenv("GHOST_VL_MMPROJ_PATH", "").strip()
+# GPU offload 层数（-1=全部；CPU 版 llama-cpp 轮子忽略此值，装 CUDA 轮子后自动生效）。
+VL_N_GPU_LAYERS = int(os.getenv("GHOST_VL_N_GPU_LAYERS", "-1"))
 # mock 后端夹具 JSON：[{"text","type","bbox":[x,y,w,h]}]
 VL_MOCK_JSON = os.getenv("GHOST_VL_MOCK_JSON", "").strip()
 

@@ -3,7 +3,7 @@
 ![version](https://img.shields.io/badge/version-0.8.0-blue)
 ![python](https://img.shields.io/badge/python-3.12.2-3776AB?logo=python&logoColor=white)
 ![platform](https://img.shields.io/badge/platform-Windows%2010%20%2F%2011-0078D6)
-![regression](https://img.shields.io/badge/regression-334%20checks%20passed-brightgreen)
+![regression](https://img.shields.io/badge/regression-345%20checks%20passed-brightgreen)
 ![audit](https://img.shields.io/badge/audit-JSONL%20%2B%20token%20fingerprint-lightgrey)
 
 Windows 桌面自动化本地服务（v0.8.0）：**mss 极速截图 + 授权式 pyautogui 动作 + 宏录制/安全重放 + 任务生命周期 + 环境感知 + 视觉反哺 Heal + 多 Agent 任务队列 + Web 监控面板 + 官方 Python SDK + MCP Server（Stdio，任意 AI Agent 即插即用）+ 本地 VL 感知（rapidocr / llama-cpp GGUF）+ v0.7 绝对防御 + v0.7.1 企业级安全 + v0.7.2 极限安全**。
@@ -76,6 +76,13 @@ Windows 桌面自动化本地服务（v0.8.0）：**mss 极速截图 + 授权式
 > ③ **打字注入升级**：本机中文 IME 会把 `pyautogui.write` 的字母打成
 > VK_PROCESSKEY（实证），ASCII 逐键注入切换为 `keyboard.write`（规范 VK+扫描码，
 > 失败回落 pyautogui）。验收：`scripts/test_v08_mcp_vl.py` **20/20**。
+> **真模型挂载**：GGUF 放 `models/`（已 gitignore）→ `.env` 设
+> `GHOST_VL_MODEL_PATH` + `GHOST_VL_MMPROJ_PATH` → `auto` 自动切 llama；
+> 下载链接（hf-mirror 实测存在）、Cursor/Claude Desktop 配置与排障见
+> **[docs/MCP_接入指南.md](docs/MCP_接入指南.md)**。
+> **像素级实证**：`scripts/test_v08_paint_precision.py` **11/11**——MCP 全链操作
+> 系统画图（OCR 读出功能区 19 控件、拖拽经安全队列），笔迹 bbox 与意图逐边
+> 误差 [2,2,4,3]px。
 
 ## ⚠️ 测试纪律红线（所有脚本强制执行，违反即事故）
 
@@ -234,7 +241,9 @@ HTTP 层   FastAPI @ 127.0.0.1:8030，全部接口挂 /api/ghost/ 前缀
 .venv\Scripts\python scripts\test_v071_security.py # v0.7.1 安全验收（互斥/热键/审计/生产过滤）
 .venv\Scripts\python scripts\test_v072_extreme.py # v0.7.2 极限安全验收（UAC/看门狗/熔断/硬超时）
 .venv\Scripts\python scripts\test_v08_mcp_vl.py   # v0.8.0 MCP+VL 验收（Stdio/感知/点击/门禁透传）
+.venv\Scripts\python scripts\test_v08_paint_precision.py  # 画图工具像素级精度综合（11 checks）
 .venv\Scripts\python mcp_server.py                # 以 Stdio 方式作为 MCP Server 供 Agent 拉起
+# Cursor / Claude Desktop 接入：docs/MCP_接入指南.md（含模型下载链接与放置路径）
 ```
 
 冒烟脚本会把鼠标甩到屏幕左上角再还原（`--failsafe` 时）；`--no-click` 可跳过真实点击。
@@ -432,6 +441,8 @@ scripts/ghost_watchdog.py   v0.7.2 独立看门狗（主进程被强杀后 keybd
 scripts/test_v072_extreme.py  v0.7.2 极限安全验收：UAC/看门狗/熔断/硬超时（40 checks）
 scripts/test_v08_mcp_vl.py  v0.8.0 MCP+VL 验收：Stdio/感知/点击/打字/任务/门禁（20 checks）
 docs/v0.8-design.md         v0.8.0 vl_driver + mcp_server 设计结构（与实现同步）
+docs/MCP_接入指南.md         Cursor/Claude Desktop 接入 + 模型下载放置 + 排障
+scripts/test_v08_paint_precision.py  画图像素级精度综合（MCP 全链 + cv2 逐边对比）
 app/core/macro_store.py     SQLite 读写 + schema 初始化
 app/core/macro_runner.py    重放骨架（v0.3 落地）
 sdk/                        官方 Python SDK（GhostClient，仅依赖 requests）
