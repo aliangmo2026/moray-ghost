@@ -895,10 +895,21 @@ def analyze(monitor: int = 1, window: Optional[str] = None,
     auto_mode = (backend or config.VL_BACKEND or "auto").strip().lower() \
         in ("", "auto")
     fallback_from = None
+    if (auto_mode and not target and not hybrid and chosen == "llama"
+            and len(controls) <= 1):
+        # 2B 在 1024 下常只回 1 个控件（实测漏按钮）；auto 用 OCR 补全
+        # 控件表。backend 仍是 llama，timings 标注 ocr_merged，绝不冒充。
+        try:
+            ocr_controls = _analyze_ocr(monitor, real_hwnd)
+        except VLBackendUnavailable:
+            ocr_controls = []
+        if ocr_controls:
+            controls = controls + ocr_controls
+            if timings is not None:
+                timings["ocr_merged"] = len(ocr_controls)
     if not controls and auto_mode and not target and not hybrid:
-        # auto 模式的“诚实降级”：llama 通用解析为空（2B 在 1024 上会
-        # 返回空/不可解析 JSON）→ 立刻用 OCR 读像素文本；后端字段回显
-        # 真实出处，绝不冒充 llama。
+        # auto 模式的“诚实降级”：llama 通用解析为空 → 立刻用 OCR 读像素
+        # 文本；后端字段回显真实出处，绝不冒充 llama。
         if chosen in ("llama", "ocr"):
             try:
                 controls = _analyze_ocr(monitor, real_hwnd)

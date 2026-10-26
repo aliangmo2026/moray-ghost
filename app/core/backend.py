@@ -108,13 +108,70 @@ def release_pointer_buttons() -> None:
         pyautogui.FAILSAFE = prev
 
 
+_MOUSEEVENTF_MOVE = 0x0001
+_MOUSEEVENTF_ABSOLUTE = 0x8000
+_MOUSEEVENTF_VIRTUALDESK = 0x4000
+_USER32 = None
+_MOUSE_EVENT = None
+if sys.platform == "win32":
+    # 私有 DLL 句柄：只给本模块的 mouse_event 设签名，绝不污染
+    # ctypes.windll.user32 上 pyautogui 共用的函数指针（否则 mouseDown
+    # 会因 argtypes 被改写而抛 c_long/ArgumentError）。
+    _USER32 = ctypes.WinDLL("user32", use_last_error=True)
+    _USER32.GetSystemMetrics.argtypes = (ctypes.c_int,)
+    _USER32.GetSystemMetrics.restype = ctypes.c_int
+    _MOUSE_EVENT = _USER32.mouse_event
+    _MOUSE_EVENT.argtypes = (ctypes.c_uint, ctypes.c_uint, ctypes.c_uint,
+                             ctypes.c_uint, ctypes.c_ulong)
+    _MOUSE_EVENT.restype = None
+
+
+def _mouse_event_absolute(x: int, y: int) -> None:
+    """真实鼠标移动事件（不是 SetCursorPos）。
+
+    现代画图（WinUI/指针输入）只把真正的鼠标移动事件画进墨迹；
+    SetCursorPos 只改光标位置，拖拽会被压缩成起点→终点的一条直线。
+    坐标按虚拟桌面归一化到 0..65535（MOUSEEVENTF_VIRTUALDESK）。
+    """
+    if not _MOUSE_EVENT:
+        pyautogui.moveTo(int(x), int(y), duration=0)
+        return
+    xv = int(_USER32.GetSystemMetrics(76))   # SM_XVIRTUALSCREEN
+    yv = int(_USER32.GetSystemMetrics(77))   # SM_YVIRTUALSCREEN
+    wv = int(_USER32.GetSystemMetrics(78))   # SM_CXVIRTUALSCREEN
+    hv = int(_USER32.GetSystemMetrics(79))   # SM_CYVIRTUALSCREEN
+    nx = int(round((int(x) - xv) * 65535.0 / max(1, wv - 1)))
+    ny = int(round((int(y) - yv) * 65535.0 / max(1, hv - 1)))
+    nx = max(0, min(65535, nx))
+    ny = max(0, min(65535, ny))
+    _MOUSE_EVENT(_MOUSEEVENTF_MOVE | _MOUSEEVENTF_ABSOLUTE
+                 | _MOUSEEVENTF_VIRTUALDESK, nx, ny, 0, 0)
+
+
+def _fail_safe_hit() -> None:
+    """mouse_event 绕过了 pyautogui 的调用级 fail-safe，这里补回四角检查。"""
+    if not pyautogui.FAILSAFE:
+        return
+    p = pyautogui.position()
+    for fx, fy in getattr(pyautogui, "FAILSAFE_POINTS", [(0, 0)]):
+        if abs(p.x - fx) <= 2 and abs(p.y - fy) <= 2:
+            raise FailSafeException(
+                "mouse is parked in a Fail-Safe corner after move")
+
+
 class PyAutoGUIBackend(InputBackend):
     def position(self) -> Tuple[int, int]:
         p = pyautogui.position()
         return int(p.x), int(p.y)
 
     def move_to(self, x: int, y: int) -> None:
-        pyautogui.moveTo(int(x), int(y), duration=0)
+        # 必须发真实鼠标移动事件：画图等指针输入应用只认 mouse_event，
+        # 不认 SetCursorPos；否则拖拽轨迹会被压缩成直线。
+        _mouse_event_absolute(int(x), int(y))
+        p = pyautogui.position()
+        if abs(p.x - int(x)) > 2 or abs(p.y - int(y)) > 2:
+            pyautogui.moveTo(int(x), int(y), duration=0)
+        _fail_safe_hit()
 
     def click(self, clicks: int = 1, button: str = "left") -> None:
         # 不传坐标：调用前已完成 moveTo + 漂移校验，避免二次移动引入竞态

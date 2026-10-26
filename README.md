@@ -94,6 +94,15 @@ Windows 桌面自动化本地服务（v0.9.0）：**mss 极速截图 + 授权式
 > 混合单测 **6/6**；**7B 实测**文本定位 1px/TTFT 2.17s，但无文字形状仍会把
 > 直角矩形选成圆角/菱形（0.99），画图 9/11——混合定位因此默认关闭
 > （`.env` `GHOST_VL_HYBRID=0`），下一步需 CV 形状校验/更强模型。
+>
+> **v0.9 纯鼠标绘画（无 VLM）**：`scripts/test_v09_draw_whale.py` **25/25**——
+> 自建 Paint + PID 差集绑定，P 铅笔 + CV 蓝色色板 + Chaikin 平滑坐标轨迹，
+> 画出鲸鱼（身体/尾鳍、眼睛、微笑、喷水、气泡、爱心、腹部线、胸鳍、海浪），
+> 截图 `data/screenshots/whale_art.png`。底层 `move_to` 从 `SetCursorPos`
+> 改为 **`mouse_event` 绝对移动**（私有 `user32` 句柄，避免污染 pyautogui），
+> 画图/指针应用才能看到真实曲线；Fail-Safe 四角检查保留，v0.7.2 极限安全
+> **40/40** 复验。MCP **21/21**、画图 **11/11** 同步回归；`vl_driver` 在
+> auto 模式下 llama 控件 ≤1 条时用 OCR 补全控件表（`timings.ocr_merged`）。
 
 ## ⚠️ 测试纪律红线（所有脚本强制执行，违反即事故）
 
