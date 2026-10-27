@@ -10,14 +10,7 @@ from typing import List, Optional, Tuple
 
 import pyperclip  # pyautogui 自带依赖；非 ASCII 文本走剪贴板粘贴
 
-if sys.platform == "win32":
-    try:
-        ctypes.windll.shcore.SetProcessDpiAwareness(2)  # 顺序红线：必须在 import pyautogui 之前
-    except OSError:
-        try:
-            ctypes.windll.user32.SetProcessDPIAware()
-        except Exception:
-            pass
+from . import dpi_awareness  # noqa: E402  顺序红线：DPI 感知先于 import pyautogui
 
 import pyautogui  # noqa: E402
 
@@ -132,6 +125,8 @@ def _mouse_event_absolute(x: int, y: int) -> None:
     现代画图（WinUI/指针输入）只把真正的鼠标移动事件画进墨迹；
     SetCursorPos 只改光标位置，拖拽会被压缩成起点→终点的一条直线。
     坐标按虚拟桌面归一化到 0..65535（MOUSEEVENTF_VIRTUALDESK）。
+    注意归一化存在量化误差：宽虚拟桌面（多屏 4K 级）下 1 像素 < 65535
+    的一个步进，落点可能差 1-2px——move_to 用相对事件做像素级修正。
     """
     if not _MOUSE_EVENT:
         pyautogui.moveTo(int(x), int(y), duration=0)
@@ -146,6 +141,20 @@ def _mouse_event_absolute(x: int, y: int) -> None:
     ny = max(0, min(65535, ny))
     _MOUSE_EVENT(_MOUSEEVENTF_MOVE | _MOUSEEVENTF_ABSOLUTE
                  | _MOUSEEVENTF_VIRTUALDESK, nx, ny, 0, 0)
+
+
+def _mouse_event_relative(dx: int, dy: int) -> None:
+    """相对物理像素移动：无归一化量化误差（v0.14 混合 DPI 像素级修正）。
+
+    mouse_event 的 dx/dy 在 MSDN 语义里是带符号 LONG；经 c_uint 传参需
+    手工按 32 位补码转 unsigned。相对位移单位恒为物理像素（DPI 感知进程），
+    与屏幕缩放比例无关——这正是绝对归一化在多屏混合 DPI 下不具备的性质。
+    """
+    if not _MOUSE_EVENT:
+        pyautogui.moveRel(int(dx), int(dy), duration=0)
+        return
+    _MOUSE_EVENT(_MOUSEEVENTF_MOVE, int(dx) & 0xFFFFFFFF,
+                 int(dy) & 0xFFFFFFFF, 0, 0)
 
 
 def _fail_safe_hit() -> None:
@@ -165,12 +174,28 @@ class PyAutoGUIBackend(InputBackend):
         return int(p.x), int(p.y)
 
     def move_to(self, x: int, y: int) -> None:
+        x, y = int(x), int(y)
+        # v0.14 多屏加固：绝对事件的目标必须落在虚拟桌面内。越界坐标被
+        # 归一化钳到边缘会被"静默"移到另一块屏上（混合 DPI 下正是最难
+        # 排查的错位来源）——宁可显式拒绝。控制器本就先做屏内校验，
+        # 这里是最后一道防线（编程错误才可能触发）。
+        if sys.platform == "win32" and not dpi_awareness.in_virtual_screen(x, y):
+            v = dpi_awareness.virtual_screen()
+            raise ValueError(
+                f"move target ({x},{y}) outside virtual screen "
+                f"({v['left']},{v['top']},{v['width']}x{v['height']})")
         # 必须发真实鼠标移动事件：画图等指针输入应用只认 mouse_event，
         # 不认 SetCursorPos；否则拖拽轨迹会被压缩成直线。
-        _mouse_event_absolute(int(x), int(y))
+        _mouse_event_absolute(x, y)
         p = pyautogui.position()
-        if abs(p.x - int(x)) > 2 or abs(p.y - int(y)) > 2:
-            pyautogui.moveTo(int(x), int(y), duration=0)
+        dx, dy = x - p.x, y - p.y
+        if dx or dy:
+            # 绝对事件的 0..65535 归一化量化误差（多屏宽桌面 >1px 常见）
+            # 用相对事件做像素级修正——仍是真实鼠标事件，画图语义不变。
+            _mouse_event_relative(dx, dy)
+            p = pyautogui.position()
+        if abs(p.x - x) > 2 or abs(p.y - y) > 2:
+            pyautogui.moveTo(x, y, duration=0)  # SetCursorPos 精确兜底
         _fail_safe_hit()
 
     def click(self, clicks: int = 1, button: str = "left") -> None:

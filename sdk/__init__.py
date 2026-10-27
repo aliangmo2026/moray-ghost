@@ -54,4 +54,4 @@ __all__ = [
     "VisionAPI",
     "WindowAPI",
 ]
-__version__ = "0.12.0"
+__version__ = "0.14.0"

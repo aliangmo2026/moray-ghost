@@ -1,12 +1,12 @@
 # moray-ghost
 
-![version](https://img.shields.io/badge/version-0.12.0-blue)
+![version](https://img.shields.io/badge/version-0.14.0-blue)
 ![python](https://img.shields.io/badge/python-3.12.2-3776AB?logo=python&logoColor=white)
 ![platform](https://img.shields.io/badge/platform-Windows%2010%20%2F%2011-0078D6)
 ![regression](https://img.shields.io/badge/regression-460%2B%20checks%20passed-brightgreen)
 ![audit](https://img.shields.io/badge/audit-JSONL%20%2B%20token%20fingerprint-lightgrey)
 
-Windows 桌面自动化本地服务（v0.12.0）：**mss 极速截图 + 授权式 pyautogui 动作 + 宏录制/安全重放 + 任务生命周期 + 环境感知 + 视觉反哺 Heal + 多 Agent 任务队列 + Web 监控面板 + 官方 Python SDK + MCP Server（Stdio，任意 AI Agent 即插即用）+ 本地 VL 感知（rapidocr / llama-cpp CUDA GGUF，2B/7B 档位 + CV+VL 混合图标定位）+ GUI RAG（OCR+CV 编号元素表 → VLM 只回 target_id）+ Ghost Guard（点击前动态高危词门禁 → PENDING_APPROVAL / 人工审批令牌）+ 纯鼠标平滑绘制 draw_trajectory + v0.7 绝对防御 + v0.7.1 企业级安全 + v0.7.2 极限安全**。
+Windows 桌面自动化本地服务（v0.14.0）：**mss 极速截图 + 授权式 pyautogui 动作 + 宏录制/安全重放 + 任务生命周期 + 环境感知 + 视觉反哺 Heal + 多 Agent 任务队列 + Web 监控面板 + 官方 Python SDK + MCP Server（Stdio，任意 AI Agent 即插即用，v0.14 起带 Resources 免工具看屏）+ 本地 VL 感知（rapidocr / llama-cpp CUDA GGUF，2B/7B 档位 + CV+VL 混合图标定位）+ GUI RAG（OCR+CV 编号元素表 → VLM 只回 target_id）+ Ghost Guard（点击前动态高危词门禁 → PENDING_APPROVAL / 人工审批令牌）+ 纯鼠标平滑绘制 draw_trajectory + v0.7 绝对防御 + v0.7.1 企业级安全 + v0.7.2 极限安全 + v0.14 多屏混合 DPI 坐标对齐与长时挂机保障**。
 
 只监听 `127.0.0.1:8030`；绝不触碰 `D:\MoRay`（主仓）。
 
@@ -172,6 +172,33 @@ Windows 桌面自动化本地服务（v0.12.0）：**mss 极速截图 + 授权�
 > **踩坑沉淀**：Edge 同步弹窗会盖住系统级录屏 → 浏览器 GIF 改用 CDP
 > 页面截图；`taskkill /T` 杀不到重挂载的 Edge 窗口宿主 → 以临时
 > `--user-data-dir` 指纹精确杀整棵树。
+>
+> **v0.14.0 极致鲁棒性与跨环境适配（开源工业级底座的恶劣环境压力位）**：
+> ① **多屏与混合 DPI 坐标对齐**——DPI 感知收口到新模块
+> `app/core/dpi_awareness.py`：Per-Monitor V2 首选 + shcore HRESULT 严格
+> 检查 + 系统级兜底，修掉旧 `except OSError` 永不触发、进程"以为自己 DPI
+> 感知了"而在 150%+100% 双屏下静默 ×1.5 错位的根因；`backend.move_to`
+> 绝对归一化后追加**相对事件像素级修正**（多屏 8K 级虚拟桌面 0..65535
+> 归一化量化误差 >1px 时仍精确落点，且仍是真实鼠标事件、画图语义不变），
+> 越界坐标显式 `ValueError`（拒绝"静默钳到另一块屏"）；`/environment`
+> 新增 DPI 档位 / 各屏物理矩形 / 虚拟桌面一致性自检。
+> 验收 `scripts/test_v14_dpi.py` **20/20**：软件模拟单/双/三屏布局的归一化
+> 往返、源图缩放换算、非感知错位复现实证（+999px）；实机每屏 3×3 网格
+> move→读回 **0px 误差**；自建 Tk 靶窗「服务端截图像素反推 bbox →
+> `/execute_action` 真实点击 → Tk 事件坐标」全链 **drift 1px**。
+> ② **长时挂机资源保障**——`scripts/test_v14_stress.py` analyze_screen /
+> draw_trajectory 各 100 次（draw 全部落在自建靶窗内），每 10 次打印服务端
+> GDI/USER 句柄、RSS、nvidia-smi 显存、截图文件数；**发现并修复**审计截图
+> 无界累积（实测 13,594 张 / 3.4GB，挂机数周必撑爆磁盘）→
+> `GHOST_SHOT_MAX_FILES` 按 mtime 修剪（默认 2000，0=关闭）。泄漏判据：
+> warmup 基线 vs 收尾 ΔGDI/USER ≤ +30、ΔRSS ≤ +120MB、ΔGPU ≤ +256MB。
+> ③ **MCP Resources（官方规范只读资源）**——`screen://current`（实时主屏
+> JPEG，物理像素与 bbox 同一坐标系）+ `ui://elements`（GUI RAG 编号元素表
+> JSON）：客户端 AI **不调工具就能"看到"当前环境**，规划循环省一轮工具
+> 往返；只读端点、冻结期照常可用、与 Tools 同一 token 鉴权，
+> 截图编码走 `GHOST_MCP_SCREEN_SCALE` / `GHOST_MCP_SCREEN_QUALITY`。
+> 验收 `scripts/test_v14_mcp_resources.py` **8 checks**（握手 / 列表 /
+> blob 魔数与物理分辨率 / 元素表靶窗命中 / 工具回归 / 未知资源错误路径）。
 
 ## ⚠️ 测试纪律红线（所有脚本强制执行，违反即事故）
 
@@ -333,6 +360,9 @@ HTTP 层   FastAPI @ 127.0.0.1:8030，全部接口挂 /api/ghost/ 前缀
 .venv\Scripts\python scripts\test_v08_paint_precision.py  # 画图工具像素级精度综合（11 checks）
 .venv\Scripts\python scripts\test_v12_gui_rag.py  # v0.12 GUI RAG 精度 + Guard 全链路（44 checks）
 .venv\Scripts\python scripts\test_v12_heavy_gui.py # v0.12 重型实战：Tk/浏览器填表 + 录制 GIF（28 checks）
+.venv\Scripts\python scripts/test_v14_dpi.py      # v0.14 多屏/混合 DPI 坐标一致性（20 checks）
+.venv\Scripts\python scripts/test_v14_stress.py   # v0.14 长时压测：analyze/draw 各 100 + 资源采样
+.venv\Scripts\python scripts/test_v14_mcp_resources.py # v0.14 MCP Resources 协议（8 checks）
 .venv\Scripts\python mcp_server.py                # 以 Stdio 方式作为 MCP Server 供 Agent 拉起
 # Cursor / Claude Desktop 接入：docs/MCP_接入指南.md（含模型下载链接与放置路径）
 # v0.12 设计/边界：docs/v0.12-design.md
@@ -349,7 +379,7 @@ HTTP 层   FastAPI @ 127.0.0.1:8030，全部接口挂 /api/ghost/ 前缀
 ### GET /health（免 token）
 
 ```json
-{"status":"ok","service":"moray-ghost","version":"0.12.0","fail_safe_enabled":true,
+{"status":"ok","service":"moray-ghost","version":"0.14.0","fail_safe_enabled":true,
  "token_required":true,"backends":{"screenshot":"mss","input":"pyautogui"},
  "monitors":[{"index":1,"left":0,"top":0,"width":2560,"height":1440,"primary":true}],
  "cursor":[x,y],"db_path":"...\\data\\ghost.db",
@@ -579,8 +609,9 @@ app/api/macro_routes.py     /macro/*（501 占位 + 只读列表/详情）
 app/core/task_queue.py      任务 FIFO 调度器 + Agent 队列 + 冻结状态机（v0.5）
 app/core/task_runner.py     任务状态机（created→queued→running→…）
 app/core/config.py          .env、常量、DB 路径（v0.7.1：GHOST_ENV / 急停热键 / 审计路径）
-app/core/screen_mss.py      thread-local mss + DPI + 编码
-app/core/backend.py         InputBackend 抽象 + PyAutoGUIBackend
+app/core/screen_mss.py      thread-local mss + 编码 + 截图保留修剪（v0.14）+ 虚拟屏/DPI 自检
+app/core/dpi_awareness.py   v0.14 进程 DPI 感知收口（Per-Monitor V2 / HRESULT 检查 / 档位如实上报）
+app/core/backend.py         InputBackend 抽象 + PyAutoGUIBackend（v0.14 绝对+相对双段落点：归一化量化修正 + 越界拒绝）
 app/core/controller.py      统一安全管道（锁 + Fail-Safe + 前后截图 + v0.7.1 输入源门禁 + v0.12 Ghost Guard 点击前局部 OCR）
 app/core/safety_gate.py     安全红线（窗口/键盘/能力令牌）+ v0.12 dynamic_guard 动态高危词 + 审批令牌
 app/core/auth.py            token 校验（静态 + HMAC Intent Token 可开关）
@@ -596,7 +627,7 @@ app/core/trajectory.py      v0.9.1 绘制资产：Chaikin 平滑 + 降采样 + H
 app/core/browser_driver.py  v0.6 CDP 浏览器接管（v0.12 DOM 文本 Ghost Guard + screenshot 录制原语）
 app/api/vl_routes.py        v0.8.0 POST /vl/analyze（v0.9 target/hybrid；v0.9.1 + /vl/describe；v0.12 + /vl/elements /vl/ground）
 app/api/draw_routes.py      v0.9.1 POST /draw_trajectory（取色+落笔复合动作，全安全管道）
-mcp_server.py               v0.8.0 MCP Server（官方 SDK Stdio；v0.9.1 起 5 Tools；v0.12 click_element 优先 GUI RAG；身份/白名单环境注入）
+mcp_server.py               v0.8.0 MCP Server（官方 SDK Stdio；v0.9.1 起 5 Tools；v0.12 click_element 优先 GUI RAG；v0.14 + Resources screen://current、ui://elements；身份/白名单环境注入）
 scripts/ghost_watchdog.py   v0.7.2 独立看门狗（主进程被强杀后 keybd_event 释放修饰键）
 scripts/test_v072_extreme.py  v0.7.2 极限安全验收：UAC/看门狗/熔断/硬超时（40 checks）
 scripts/test_v08_mcp_vl.py  v0.8.0 MCP+VL 验收：Stdio/感知/点击/打字/任务/门禁（21 checks）
@@ -606,6 +637,11 @@ scripts/test_v09_draw_trajectory.py  v0.9.1 通用绘制接口验收：单元/�
 scripts/test_v09_vlm_read_whale.py  v0.9.1 VLM 读自己的画（describe，4 checks）
 scripts/test_v12_gui_rag.py   v0.12 GUI RAG 准确率 + Guard 拦截/审批 + MCP 全链（44 checks）
 scripts/test_v12_heavy_gui.py v0.12 重型实战：Tk 表单 + 本地浏览器表单 + GIF/MP4 录制（28 checks）
+scripts/test_v13_cad_stream.py v0.13 CAD 命令流替代验证：自建迷你 CAD 控制台 + 键盘命令流 + DXF/像素/VLM 三重验证（28 checks）
+scripts/_v13_cad_console.py   v0.13 自建迷你 CAD 控制台靶窗（RECT/CIRCLE/ZOOM/SAVEAS 状态机 → ezdxf DXF）
+scripts/test_v14_dpi.py       v0.14 多屏/混合 DPI：模拟换算 + 实机往返 + Tk 点击闭环（20 checks）
+scripts/test_v14_stress.py    v0.14 长时压测：analyze/draw 各 100 次 + GDI/RSS/GPU/截图采样与泄漏判定
+scripts/test_v14_mcp_resources.py v0.14 MCP Resources 协议验收（8 checks）
 scripts/_v12_form_target.py   v0.12 自建 Tk 表单靶窗（10 控件，危险按钮仅本地回显）
 scripts/make_whale_cover.py  v0.9.1 官方封面生成（docs/assets/whale_cover.html）
 docs/底层物理控制.md         v0.9.1 物理层三大踩坑：SetCursorPos/ctypes 污染/闭合线合并

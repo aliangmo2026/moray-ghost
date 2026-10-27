@@ -80,6 +80,8 @@ def snapshot(probe_grab: bool = True) -> Dict[str, Any]:
         "foreground_hwnd": fg,
         "input_allowed": input_allowed,
         "grab": grab_st,
+        # v0.14：DPI 档位 + 各屏物理矩形 + 虚拟桌面一致性（混合 DPI 野外排障）
+        "screen": screen_mss.dpi_status(),
         "modifiers_down": backend.pressed_modifiers(),
         "elapsed_ms": int((time.perf_counter() - t0) * 1000),
     }

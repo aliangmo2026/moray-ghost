@@ -17,7 +17,7 @@ ENV_PATH = BASE_DIR / ".env"
 load_dotenv(ENV_PATH)
 
 SERVICE = "moray-ghost"
-VERSION = "0.12.0"
+VERSION = "0.14.0"
 
 HOST = os.getenv("GHOST_HOST", "127.0.0.1")
 PORT = int(os.getenv("GHOST_PORT", "8030"))
@@ -48,6 +48,12 @@ RATE_LIMIT_CONSECUTIVE = int(os.getenv("GHOST_RATE_LIMIT_CONSECUTIVE", "50"))
 # 独立看门狗（v0.7.2）：主进程被强杀后释放系统修饰键（防按键卡死）。
 WATCHDOG_ENABLED = os.getenv("GHOST_WATCHDOG", "true").strip().lower() in (
     "1", "true", "yes")
+
+# ---- v0.14 长时运行保障 ----------------------------------------------------
+
+# 审计截图保留上限（按 mtime 只保留最新 N 张；0 = 不限制）。
+# 实测挂机期间截图无界累积到 13,594 张 / 3.4GB——挂机数周必然撑爆磁盘。
+SHOT_MAX_FILES = int(os.getenv("GHOST_SHOT_MAX_FILES", "2000"))
 
 # ---- v0.8.0 MCP 多模态感知（VL Driver） ------------------------------------
 

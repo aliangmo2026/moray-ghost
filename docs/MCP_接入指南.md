@@ -1,6 +1,6 @@
 # Ghost MCP 接入指南（Cursor / Claude Desktop / 任意 MCP 客户端）
 
-> 版本：v0.8.0+ · 服务端安全门禁在 MCP 模式下 100% 生效（令牌 / 能力白名单 /
+> 版本：v0.14.0+ · 服务端安全门禁在 MCP 模式下 100% 生效（令牌 / 能力白名单 /
 > UAC·窗口·键盘黑名单 / 频率熔断 / 硬超时 / JSONL 审计，无一条旁路）。
 
 ## 0. 一分钟看懂
@@ -18,6 +18,10 @@ Ghost 服务（需先在运行：.\start.ps1 或 .venv\Scripts\python.exe run.py
 5 个工具：`analyze_screen`（看窗口控件）、`click_element`（按文本点击）、
 `type_text`（键入）、`draw_trajectory`（平滑鼠标绘制，可先取色板颜色）、
 `execute_task`（安全队列执行任务）。
+
+2 个资源（v0.14，MCP 规范只读 Resources——**不调工具就能"看到"环境**）：
+`screen://current`（实时主屏截图，JPEG blob）、`ui://elements`（当前
+GUI RAG 编号元素表，JSON，物理像素 bbox）。
 
 ## 1. 前置条件
 
@@ -166,6 +170,25 @@ CV（Otsu + 连通域）先粗筛小图标，生成带编号的 contact sheet，
   `PENDING_APPROVAL` / `approval_token`。不抓浏览器窗口也能用
   `op=screenshot` 取页面截图做录屏/审计。
 
+## 4.5 v0.14 Resources（不调工具也能"看到"环境）
+
+MCP 规范的 Resources 是只读拉取：规划循环里每一步先 `resources/read` 拿到
+环境，再决定调哪个 Tool——省掉「先调 analyze 才能看」的一轮往返。
+
+| URI | 内容 | mimeType |
+|---|---|---|
+| `screen://current` | 实时主屏截图（物理像素，与 bbox 同一坐标系；每次 read 都是新抓的） | `image/jpeg` |
+| `ui://elements` | 当前编号元素表（OCR+CV+win32 检索，零模型参与坐标；含 id/bbox/center） | `application/json` |
+
+- 两者都是**只读端点**（`/screenshot`、`/vl/elements`）：冻结期照常可用、
+  不产生任何输入；鉴权与 Tools 同一 `X-Ghost-Token`；
+- 截图体积旋钮（启动环境变量）：`GHOST_MCP_SCREEN_SCALE`（默认 `1.0`）、
+  `GHOST_MCP_SCREEN_QUALITY`（默认 `80`）；
+- `ui://elements` 读回的 `id` 可直接用于 `click_element`/ground 选号——
+  元素表与选择层同源，不会出现两套坐标；
+- 自动化验证：`scripts/test_v14_mcp_resources.py`（握手/列表/blob 魔数/
+  元素表命中/工具回归/错误路径，8 checks）。
+
 ## 5. 验证（不依赖任何客户端的自动化）
 
 ```powershell
@@ -173,6 +196,7 @@ CV（Otsu + 连通域）先粗筛小图标，生成带编号的 contact sheet，
 .venv\Scripts\python scripts\test_v08_paint_precision.py  # 画图工具像素级精度综合
 .venv\Scripts\python scripts\test_v12_gui_rag.py    # GUI RAG 准确率 + Guard 拦截/审批（44 checks）
 .venv\Scripts\python scripts\test_v12_heavy_gui.py  # Tk/浏览器填表实战 + GIF 录制（28 checks）
+.venv\Scripts\python scripts\test_v14_mcp_resources.py  # Resources 协议（8 checks）
 ```
 
 手工冒烟（客户端里说一句话即可）："打开记事本并在里面输入 hello"——

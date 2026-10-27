@@ -624,8 +624,8 @@ def main() -> int:
             return 1
         h = requests.get(
             "http://127.0.0.1:8030/api/ghost/health", timeout=5).json()
-        check("0.3 /health version=0.12.0",
-              str(h.get("version")) == "0.12.0", str(h.get("version")))
+        check("0.3 /health version=" + config.VERSION,
+              str(h.get("version")) == config.VERSION, str(h.get("version")))
         g = h.get("guard") or {}
         rag = h.get("rag") or {}
         check("0.4 /health 回显 Guard/RAG 配置",

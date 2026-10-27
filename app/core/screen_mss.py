@@ -1,7 +1,9 @@
 """mss 截图：DPI 感知（必须先于 import mss）+ 专用抓屏线程 + PIL 编码。
 
-Windows 红线：SetProcessDpiAwareness(2) 必须在 import mss / import pyautogui
-之前调用，否则截图分辨率与点击坐标系不一致（物理像素 vs 虚拟化坐标）。
+Windows 红线：DPI 感知必须在 import mss / import pyautogui 之前设置，
+否则截图分辨率与点击坐标系不一致（物理像素 vs 虚拟化坐标）。v0.14 起
+收口到 dpi_awareness 模块（Per-Monitor V2 首选 + HRESULT 严格检查，
+修掉旧 `except OSError` 永不触发、混合 DPI 下静默 ×1.5 错位的隐患）。
 
 线程模型：BitBlt 抓屏全部收口到单一 capture 工作线程（一个 mss 实例、
 队列化、带退避重试与实例自愈）。实测多线程各自持 mss 实例时 BitBlt 会
@@ -14,11 +16,9 @@ from __future__ import annotations
 
 import base64
 import collections
-import ctypes
 import io
 import logging
 import queue
-import sys
 import threading
 import time
 import uuid
@@ -27,31 +27,16 @@ from typing import Any, Dict, List, Optional, Tuple
 
 LOG = logging.getLogger("moray-ghost.screen_mss")
 
-DPI_AWARE = False
+from . import dpi_awareness  # noqa: E402  顺序红线：必须在 import mss 之前
 
-
-def _set_dpi_awareness() -> None:
-    global DPI_AWARE
-    if sys.platform != "win32":
-        return
-    try:
-        ctypes.windll.shcore.SetProcessDpiAwareness(2)
-        DPI_AWARE = True
-    except OSError:
-        try:
-            ctypes.windll.user32.SetProcessDPIAware()
-            DPI_AWARE = True
-        except Exception:
-            DPI_AWARE = False
-
-
-_set_dpi_awareness()  # 顺序红线：必须在 import mss 之前
+DPI_AWARE = dpi_awareness.DPI_AWARE  # 兼容旧引用（app.main 启动日志）
+DPI_MODE = dpi_awareness.MODE
 
 import mss  # noqa: E402
 from mss.exception import ScreenShotError  # noqa: E402
 from PIL import Image  # noqa: E402
 
-from .config import SCREENSHOT_DIR  # noqa: E402
+from .config import SCREENSHOT_DIR, SHOT_MAX_FILES  # noqa: E402
 
 _tls = threading.local()
 
@@ -186,6 +171,45 @@ def monitor_rect(index: int) -> Dict[str, int]:
     return dict(_local_mss().monitors[index])
 
 
+# ---------------- v0.14 多屏 / 混合 DPI ----------------
+
+def virtual_screen() -> Dict[str, int]:
+    """虚拟桌面（全屏联合区）物理矩形。"""
+    return dpi_awareness.virtual_screen()
+
+
+def dpi_status() -> Dict[str, Any]:
+    """DPI 感知档位 + 各屏物理矩形 + 虚拟桌面一致性自检。
+
+    自检项：monitors[0]（联合区）必须覆盖每一屏、与 GetSystemMetrics
+    虚拟桌面完全一致；主屏必须落在 (0,0)（Windows 虚拟屏定义）。
+    """
+    mons = monitors()
+    out: Dict[str, Any] = dict(dpi_awareness.status())
+    out["monitors"] = mons
+    try:
+        v = virtual_screen()
+        out["virtual_screen_matches_monitors0"] = bool(
+            mons and mons[0]["left"] == v["left"] and mons[0]["top"] == v["top"]
+            and mons[0]["width"] == v["width"]
+            and mons[0]["height"] == v["height"])
+    except OSError as exc:
+        out["virtual_screen_matches_monitors0"] = None
+        out["virtual_screen_error"] = str(exc)
+    return out
+
+
+def monitor_at(x: int, y: int) -> Optional[Dict[str, int]]:
+    """包含物理点 (x,y) 的屏（不含联合区 index 0）；不在任何屏上返回 None。"""
+    for m in monitors():
+        if m["index"] == 0:
+            continue
+        if (m["left"] <= x < m["left"] + m["width"]
+                and m["top"] <= y < m["top"] + m["height"]):
+            return m
+    return None
+
+
 # ---------------- 编码与落盘 ----------------
 
 def encode(img: Image.Image, fmt: str = "jpeg", quality: int = 70, scale: float = 1.0) -> bytes:
@@ -212,7 +236,45 @@ def new_shot_path(purpose: str, fmt: str) -> Path:
 def save_bytes(data: bytes, purpose: str, fmt: str) -> Path:
     path = new_shot_path(purpose, fmt)
     path.write_bytes(data)
+    _prune_shots()
     return path
+
+
+# ---------------- v0.14 审计截图保留（防无界增长撑爆磁盘） ----------------
+
+_PRUNE_EVERY = 16  # 每 16 次落盘修剪一次（避免每次保存都遍历目录）
+_prune_lock = threading.Lock()
+_prune_counter = _PRUNE_EVERY - 1  # 首次落盘即修剪（清掉历史无界累积）
+
+
+def _prune_shots() -> None:
+    """截图目录只保留最新 SHOT_MAX_FILES 张（0 = 关闭）。
+
+    挂机场景实测：审计 before/after 截图按动作数无界累积（13,594 张 /
+    3.4GB），连续运行数周必然写满磁盘 → 崩溃。按 mtime 删最旧；最新
+    N 张恒在保留集内，返回给调用方的当次落盘文件不会被删。
+    """
+    global _prune_counter
+    cap = int(SHOT_MAX_FILES)
+    if cap <= 0:
+        return
+    with _prune_lock:
+        _prune_counter += 1
+        if _prune_counter < _PRUNE_EVERY:
+            return
+        _prune_counter = 0
+        try:
+            files = [p for p in SCREENSHOT_DIR.glob("*") if p.is_file()]
+            if len(files) <= cap:
+                return
+            files.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+            for old in files[cap:]:
+                try:
+                    old.unlink()
+                except OSError:
+                    pass  # 正被读取/已删：单文件失败不阻断
+        except OSError as exc:
+            LOG.warning("screenshot prune failed: %s", exc)
 
 
 def save_audit(img: Image.Image, purpose: str, fmt: str, quality: int) -> Path:

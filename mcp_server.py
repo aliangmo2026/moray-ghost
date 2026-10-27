@@ -1,4 +1,9 @@
-"""moray-ghost MCP Server（v0.12 · Stdio）：把 Ghost 接进任意 AI Agent。
+"""moray-ghost MCP Server（v0.14 · Stdio）：把 Ghost 接进任意 AI Agent。
+
+v0.14 起新增 Resources（MCP 规范的只读资源，无需调工具即可感知）：
+    screen://current   实时主屏截图（JPEG blob，物理像素）
+    ui://elements      当前 GUI RAG 编号元素表（JSON，物理像素 bbox）
+两者都走服务端只读端点（token/冻结门禁与 Tools 同管道）。
 
 启动（由 Agent 侧拉起，stdio JSON-RPC）：
     python mcp_server.py
@@ -112,6 +117,10 @@ mcp = MCPServer(
         "types into a window (focus it first via click_element); "
         "draw_trajectory draws a smooth mouse stroke (optionally picking a "
         "palette color first); execute_task runs a queued task. "
+        "Resources: screen://current is a live screenshot of the primary "
+        "monitor and ui://elements is the current numbered GUI RAG element "
+        "table (physical-pixel bboxes) - reading them lets the client see "
+        "the environment without calling a tool. "
         "Identity/capabilities come from the spawn environment "
         "(GHOST_TOKEN / GHOST_AGENT_ID / GHOST_CAPABILITIES) and are enforced "
         "server-side; security denials are returned as structured "
@@ -336,6 +345,70 @@ def draw_trajectory(points: List[List[float]], color: Optional[str] = None,
     if window:
         payload["window"] = str(window)
     return _post("/draw_trajectory", payload, timeout=120)
+
+
+# ---- MCP Resources（v0.14）：把 Ghost 的"所见"暴露成协议级资源 ------------
+#
+# 动机：Tools 是一问一答，规划循环里每一步都要先调工具才能感知环境；
+# Resources 让客户端 AI 直接 resources/read「看到」当前屏幕与 GUI RAG
+# 元素表（MCP 规范里资源是只读拉取语义），省掉一轮工具往返。
+# 两个端点都是服务端只读感知（/screenshot 单一 capture 线程抓屏、
+# /vl/elements 零模型检索），冻结期照常可用、不产生任何输入；
+# 鉴权与 Tools 同一 X-Ghost-Token，凭据仍只来自启动环境。
+#
+# 环境旋钮（只读，默认开）：
+#   GHOST_MCP_SCREEN_SCALE   截图缩放 0.1-1.0（默认 1.0，物理像素保真）
+#   GHOST_MCP_SCREEN_QUALITY JPEG 质量 10-95（默认 80）
+
+@mcp.resource(
+    "screen://current",
+    name="Current Screen",
+    title="Current screen (primary monitor)",
+    description="Live screenshot of the primary monitor as JPEG (base64 on "
+                "the wire). Physical pixels: size equals the monitor "
+                "geometry returned by analyze_screen / ui://elements, so "
+                "bboxes in those payloads map 1:1 onto this image. Re-read "
+                "any time - every read grabs the screen fresh.",
+    mime_type="image/jpeg",
+)
+def resource_screen_current() -> bytes:
+    """实时主屏截图（服务端 /screenshot → 本资源以 blob 返回）。"""
+    import base64
+
+    scale = float(os.getenv("GHOST_MCP_SCREEN_SCALE", "1.0") or 1.0)
+    scale = max(0.1, min(1.0, scale))
+    quality = int(os.getenv("GHOST_MCP_SCREEN_QUALITY", "80") or 80)
+    body = _get(f"/screenshot?monitor=1&fmt=jpeg&quality={quality}"
+                f"&scale={scale}", timeout=30)
+    if not body.get("ok"):
+        raise RuntimeError("screen://current unavailable: "
+                           + str(body.get("error")) + ": "
+                           + str(body.get("detail"))[:200])
+    return base64.b64decode(body["image_b64"])
+
+
+@mcp.resource(
+    "ui://elements",
+    name="UI Element Table",
+    title="Current GUI RAG element table",
+    description="Numbered GUI RAG element table of the primary monitor: "
+                "OCR+CV+win32 merged elements with physical-pixel bboxes, "
+                "centers and stable ids. Pure retrieval (no model in the "
+                "coordinate path) - ids are safe to reference from "
+                "click_element / ground_target without re-deriving geometry.",
+    mime_type="application/json",
+)
+def resource_ui_elements() -> Dict[str, Any]:
+    """当前 GUI RAG 元素表（服务端 /vl/elements，返回 JSON）。"""
+    body = _post("/vl/elements",
+                 {"monitor": 1, "backend": "auto", "include_icons": False,
+                  "max_elements": 200, "annotate": False}, timeout=120)
+    if body.get("ok") is False and not body.get("elements"):
+        # 只读资源同样如实报错（HTTP 层错误码保留，正文结构化）
+        raise RuntimeError("ui://elements unavailable: "
+                           + str(body.get("error")) + ": "
+                           + str(body.get("detail"))[:200])
+    return body
 
 
 def main() -> int:
