@@ -1,24 +1,28 @@
 # -*- coding: utf-8 -*-
-"""v0.10 豆包头像复现验收：方案一「灵魂线稿」+ 方案二「像素风」。
+"""v0.10/v0.11 豆包头像复现验收：方案一「灵魂线稿」+ 方案二「高精度像素画」。
 
 数据：data/doubao.png（主仓发来的 512x512 3D 虚拟人像）。
 
 方案一 灵魂线稿：
   Canny 边缘 → 形态学膨胀连接断线 → 连通域过滤小噪点 → 取面积 Top-N 轮廓
-  → 降采样 → 逐条 draw_trajectory（服务端平滑+真实鼠标事件）在画图里描边；
-  像素差分验证 + VLM(describe) 看是否认得出人像。
+  → 降采样 → 逐条 draw_trajectory（服务端平滑+真实鼠标事件）在画布里描边。
 
-方案二 像素风：
-  PIL 压成 32x32 → 自适应量化 ≤12 色 → 画 33+33 条黑色网格线（铅笔双线
-  防填充泄漏）→ 截屏检测色板全部实心色板点 → 量化色就近映射色板 → B=油漆桶
-  → 按色分组逐格填充（色切换最少化；每格一次 execute_action click，安全
-  管道全生效；中途抽样守卫防"网格缺口导致整画布淹没"）→ 20 格抽样比对
-  真值颜色 + VLM(describe) 识图。
+方案二 高精度像素画（v0.11 重构，默认 64x64，可 128x128）：
+  绝不逐格点击。PIL 压成 GRID_N×GRID_N → 自适应量化 → 背景语义白化 →
+  色板检测（深色主题无关）→ 量化色 LAB 最近色板映射 → **同色连续像素合并成
+  run-length 横向轨迹** → 画笔（非铅笔，粗细可控）逐 run 一次 drag 拖出整段
+  （每条轨迹 is_painting=true 豁免频率熔断指纹计数——合法长时绘图绝不画到
+  一半被安全门禁截断；冻结/归属/前台/Fail-Safe/硬超时等其余门禁一道不少）。
+  笔宽闭环：画布左侧浮动滑杆点击设值 → 探针线实测宽度 → 不达标自动再调
+  → Ctrl+Z 清探针 → run 端点按 T/2 内缩（圆头帽不越界）+ 多道覆盖补高。
 
-红线：只操作本次 Popen 的 mspaint（PID 差集绑定；启动前已有 Paint 直接 SKIP），
-两方案各用独立 Paint 实例（相变清场），清场只杀自己的进程树。
+全程录屏：后台线程 4fps 抓画布区（走服务端单一 capture 线程 /screenshot，
+不自开 mss 实例）→ cv2 合成加速 MP4 + PIL 合成 GIF → docs/assets/。
 
-跑法：.venv\\Scripts\\python.exe scripts\\test_v10_draw_doubao.py [line|pixel|both]
+红线：只操作本次 Popen 的 mspaint（PID 差集绑定；启动前已有 Paint 直接
+SKIP），清场只杀自己的进程树。
+
+跑法：.venv\\Scripts\\python.exe scripts\\test_v10_draw_doubao.py [line|pixel|both] [64|128]
 """
 from __future__ import annotations
 
@@ -26,6 +30,7 @@ import base64
 import ctypes
 import io
 import json
+import math
 import socket
 import subprocess
 import sys
@@ -57,18 +62,35 @@ TOKEN = config.ensure_token()
 MODE = (sys.argv[1] if len(sys.argv) > 1 else "both").strip().lower()
 if MODE not in ("line", "pixel", "both"):
     MODE = "both"
+try:
+    GRID_N = int(sys.argv[2]) if len(sys.argv) > 2 else 64
+except ValueError:
+    GRID_N = 64
+if GRID_N not in (32, 64, 128):
+    GRID_N = 64
+QUANT_COLORS = 16 if GRID_N <= 64 else 20
 
 ART = ROOT / "data" / "doubao.png"
 OUT_LINE = ROOT / "data" / "screenshots" / "doubao_line_art.png"
-OUT_PIXEL = ROOT / "data" / "screenshots" / "doubao_pixel_art.png"
+OUT_PIXEL = ROOT / "data" / "screenshots" / f"doubao_pixel_art_{GRID_N}.png"
+ASSETS = ROOT / "docs" / "assets"
+VID_PIXEL = ASSETS / ("doubao_drawing.mp4" if GRID_N == 64
+                      else f"doubao_drawing_{GRID_N}.mp4")
+GIF_PIXEL = ASSETS / ("doubao_drawing.gif" if GRID_N == 64
+                      else f"doubao_drawing_{GRID_N}.gif")
+VID_LINE = ASSETS / "doubao_line_drawing.mp4"
 
 RESULTS: list = []
 PROCS: list = []
-GRID_N = 32
-QUANT_COLORS = 12
 MAX_STROKES = 30
 MIN_CONTOUR_AREA = 60.0
 MAX_STROKE_PTS = 90
+
+# ---- 自建 Paint UI 标定（_v11_recon.py 读图标定，窗口相对分数，2048x1280） ----
+FRAC_BRUSH_MAIN = (0.2930, 0.1352)   # 画笔库按钮上半（重选当前笔，不弹层）
+FRAC_SIZE_TRACK_X = 0.0288           # 画布左侧浮动"粗细"滑杆轨道 x
+FRAC_SIZE_TRACK_TOP = 0.2789         # 轨道顶端 = 最大
+FRAC_SIZE_TRACK_BOT = 0.6078         # 轨道底端 = 最小（默认旋钮 ~80% 深）
 
 
 def check(name: str, ok: bool, detail: str = "") -> bool:
@@ -150,12 +172,14 @@ def act(payload: dict, timeout: float = 90.0) -> dict:
 
 
 def draw(points, duration_ms: int, hwnd: int, caps: dict,
-         smooth: int = 2) -> dict:
+         smooth: int = 0, is_painting: bool = True) -> dict:
+    """落笔一条轨迹。is_painting=True（默认）豁免频率熔断指纹计数。"""
     r = requests.post("http://127.0.0.1:8030/api/ghost/draw_trajectory",
                       headers={"X-Ghost-Token": TOKEN},
                       json={"points": points, "duration_ms": duration_ms,
                             "hwnd": hwnd, "smooth_iterations": smooth,
-                            "settle_seconds": 0.05, "capabilities": caps},
+                            "is_painting": is_painting,
+                            "settle_seconds": 0.03, "capabilities": caps},
                       timeout=90)
     try:
         body = r.json()
@@ -363,19 +387,154 @@ def open_own_paint(phase: str):
     if win is None:
         kill_tree(paint)
         return None
+    # 长时绘制期间用户全屏窗口可能压住测试窗 → TOPMOST 常驻（自建窗口）
+    try:
+        win32gui.SetWindowPos(win["hwnd"], win32con.HWND_TOPMOST, 0, 0, 0, 0,
+                              win32con.SWP_NOMOVE | win32con.SWP_NOSIZE)
+    except Exception:  # noqa: BLE001
+        pass
     return {"proc": paint, "hwnd": win["hwnd"], "rect": win["rect"],
-            "title": win["title"]}
+            "title": win["title"], "before": before}
 
 
 def close_own_paint(paint_obj, hwnd: int) -> bool:
     if paint_obj is not None:
         kill_tree(paint_obj["proc"])
+        # 铁律清场：启动前差集之外的 mspaint 一律是我方产物——WinUI mspaint
+        # 偶发 launcher/real 换壳，kill_tree 可能漏网（首轮实证孤儿 pid 存活）
+        before = paint_obj.get("before") or set()
+        for pid in paint_pids() - before:
+            try:
+                psutil.Process(pid).kill()
+            except psutil.Error:
+                pass
         try:
             paint_obj["proc"].wait(timeout=8)
         except Exception:  # noqa: BLE001
             pass
-    time.sleep(0.5)
-    return not win32gui.IsWindow(hwnd)
+    time.sleep(0.6)
+    left = set()
+    if paint_obj is not None:
+        left = paint_pids() - (paint_obj.get("before") or set())
+    return (not win32gui.IsWindow(hwnd)) and not left
+
+
+# ---- 全程录屏（后台线程抓画布区 → MP4/GIF） ---------------------------------
+
+class CanvasRecorder:
+    """4fps 抓画布区（走服务端 /screenshot 单一 capture 线程，不自开 mss）。
+
+    帧以 JPEG bytes 入内存（~80KB/帧，上限 2600 帧 ≈ 10 分钟），结束后
+    compose_video / compose_gif 合成加速回放。
+    """
+
+    def __init__(self, crop_box, fps: float = 4.0, max_frames: int = 2600):
+        self.crop = crop_box  # (x, y, w, h) 物理像素
+        self.interval = 1.0 / max(0.5, fps)
+        self.max_frames = int(max_frames)
+        self.frames: list = []
+        self.errors = 0
+        self.first_exc: str = ""
+        self.stop_event = threading.Event()
+        self.thread: threading.Thread | None = None
+
+    def _run(self):
+        while not self.stop_event.is_set():
+            t0 = time.time()
+            try:
+                r = requests.get(
+                    "http://127.0.0.1:8030/api/ghost/screenshot",
+                    params={"monitor": 1, "fmt": "jpeg", "scale": 1.0,
+                            "quality": 80}, timeout=15)
+                if r.status_code == 200:
+                    raw = base64.b64decode(r.json()["image_b64"])
+                    arr = cv2.imdecode(np.frombuffer(raw, np.uint8),
+                                       cv2.IMREAD_COLOR)
+                    if arr is not None:
+                        x, y, w, h = self.crop
+                        crop = arr[max(0, y):y + h, max(0, x):x + w]
+                        if crop.size:
+                            ok_e, buf = cv2.imencode(
+                                ".jpg", crop,
+                                [cv2.IMWRITE_JPEG_QUALITY, 82])
+                            if ok_e:
+                                self.frames.append(buf.tobytes())
+                            else:
+                                self.errors += 1
+                else:
+                    self.errors += 1
+            except Exception as exc:  # noqa: BLE001
+                self.errors += 1
+                if not self.first_exc:
+                    import traceback as _tb
+                    self.first_exc = _tb.format_exc(limit=4)
+                    print("  [recorder] first error: "
+                          + repr(exc), flush=True)
+            if len(self.frames) >= self.max_frames:
+                break
+            self.stop_event.wait(max(0.0, self.interval - (time.time() - t0)))
+
+    def start(self):
+        self.thread = threading.Thread(target=self._run, daemon=True)
+        self.thread.start()
+
+    def stop(self) -> int:
+        self.stop_event.set()
+        if self.thread is not None:
+            self.thread.join(timeout=8)
+        return len(self.frames)
+
+
+def _decode(jb: bytes):
+    return cv2.imdecode(np.frombuffer(jb, np.uint8), cv2.IMREAD_COLOR)
+
+
+def compose_video(frames_jpeg: list, path: Path, fps_out: int = 12,
+                  max_side: int = 640) -> bool:
+    """JPEG 帧序列 → 加速回放 MP4（12fps 输出 = 4fps 采集的 3 倍速）。"""
+    if len(frames_jpeg) < 8:
+        return False
+    first = _decode(frames_jpeg[0])
+    if first is None:
+        return False
+    h, w = first.shape[:2]
+    sc = max_side / float(max(h, w))
+    if sc < 1:
+        w, h = max(2, int(w * sc) // 2 * 2), max(2, int(h * sc) // 2 * 2)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    vw = cv2.VideoWriter(str(path), cv2.VideoWriter_fourcc(*"mp4v"),
+                         fps_out, (w, h))
+    if not vw.isOpened():
+        return False
+    for jb in frames_jpeg:
+        f = _decode(jb)
+        if f is None:
+            continue
+        if f.shape[0] != h or f.shape[1] != w:
+            f = cv2.resize(f, (w, h))
+        vw.write(f)
+    vw.release()
+    return path.is_file() and path.stat().st_size > 4096
+
+
+def compose_gif(frames_jpeg: list, path: Path, every: int = 2,
+                max_w: int = 380, colors: int = 96, dur_ms: int = 80) -> bool:
+    """隔帧抽样 → 限宽限色 GIF（控文件大小）。"""
+    imgs = []
+    for jb in frames_jpeg[::max(1, every)]:
+        f = _decode(jb)
+        if f is None:
+            continue
+        im = Image.fromarray(cv2.cvtColor(f, cv2.COLOR_BGR2RGB))
+        if im.width > max_w:
+            im = im.resize((max_w, int(im.height * max_w / im.width)))
+        imgs.append(im.convert("P", palette=Image.ADAPTIVE, colors=colors))
+    if len(imgs) < 6:
+        return False
+    path.parent.mkdir(parents=True, exist_ok=True)
+    imgs[0].save(path, save_all=True, append_images=imgs[1:],
+                 duration=dur_ms, loop=0, optimize=True)
+    return path.is_file() and path.stat().st_size > 2048
 
 
 # ---- 方案一：灵魂线稿 -------------------------------------------------------
@@ -465,6 +624,8 @@ def phase_line(srv_alive_check) -> None:
     side = int(min(cw, ch) * 0.88)
     box = (cx + (cw - side) // 2, cy + (ch - side) // 2, side)
 
+    rec = CanvasRecorder((max(0, cx), max(0, cy), cw, ch), fps=4.0)
+    rec.start()
     keeper = FocusKeeper(hwnd)
     keeper.start()
     try:
@@ -510,10 +671,14 @@ def phase_line(srv_alive_check) -> None:
         print("  ART line: " + str(OUT_LINE), flush=True)
     finally:
         keeper.stop()
-    check("L9 清场：线稿画图窗口已销毁", close_own_paint(paint, hwnd))
+        n_frames = rec.stop()
+        ok_v = compose_video(rec.frames, VID_LINE)
+        check("L9 全程录屏合成线稿 MP4", ok_v and n_frames >= 15,
+              f"frames={n_frames} errors={rec.errors} -> {VID_LINE.name}")
+    check("L10 清场：线稿画图窗口已销毁", close_own_paint(paint, hwnd))
 
 
-# ---- 方案二：像素风 ---------------------------------------------------------
+# ---- 方案二：高精度像素画（run-length 合并拖拽） -----------------------------
 
 def split_background(img_bgr):
     """颜色语义抠底：豆包背景是"偏蓝且亮"（b>r+12），皮肤 r>b、头发/毛衣
@@ -538,7 +703,7 @@ def split_background(img_bgr):
 
 
 def plan_pixels():
-    """背景白化 → 32x32 + 自适应量化 ≤12 色（色位全留给人物）。"""
+    """背景白化 → GRID_N×GRID_N + 自适应量化 ≤QUANT_COLORS 色。"""
     im = Image.open(ART)
     if im.mode != "RGB":
         rgba = im.convert("RGBA")
@@ -666,12 +831,156 @@ def sample_cells(img, canvas, box, pal, idx, swatch_of, n=40, tol=70):
     return hits, total
 
 
+def _is_white_swatch(sw) -> bool:
+    bgr = sw[2]
+    return all(v > 232 for v in (bgr[2], bgr[1], bgr[0]))
+
+
+def plan_runs(idx, swatch_of):
+    """同色连续像素合并成横向 run：{(sw_x, sw_y): (swatch, [(i, j0, j1)...])}。
+
+    白格（画布本色）天然跳过；相邻格同色板即同 run。行内蛇形排序由
+    paint_groups 负责（减少空走）。
+    """
+    groups: dict = {}
+    for i in range(GRID_N):
+        j = 0
+        while j < GRID_N:
+            c = int(idx[i, j])
+            sw = swatch_of.get(c)
+            if sw is None or _is_white_swatch(sw):
+                j += 1
+                continue
+            key = (sw[0], sw[1])
+            j0 = j
+            while j < GRID_N:
+                c2 = int(idx[i, j])
+                sw2 = swatch_of.get(c2)
+                if (sw2 is None or _is_white_swatch(sw2)
+                        or (sw2[0], sw2[1]) != key):
+                    break
+                j += 1
+            groups.setdefault(key, (sw, []))[1].append((i, j0, j - 1))
+    return groups
+
+
+def run_passes(run, cell, box, stroke_w, passes):
+    """一条 run → N 道平行横线（多道补高）；端点内缩 cap 在 cell/2-1
+    （圆头帽不越界；内缩上限防御——首轮 T 假大 458px 曾把全部 run
+    塌缩成圆点）。"""
+    i, j0, j1 = run
+    x0, y0, _s = box
+    yc = y0 + (i + 0.5) * cell
+    inset = min(stroke_w / 2.0, cell / 2.0 - 1.0)
+    xl = x0 + j0 * cell + inset
+    xr = x0 + (j1 + 1) * cell - inset
+    if xr < xl:
+        xm = (xl + xr) / 2.0
+        xl = xr = xm
+    gap = cell / float(passes)
+    out = []
+    for k in range(passes):
+        dy = (k + 0.5) * gap - cell / 2.0
+        yy = int(round(yc + dy))
+        out.append([[int(round(xl)), yy], [int(round(xr)), yy]])
+    return out
+
+
+def park_cursor(hwnd: int, rect, caps: dict) -> None:
+    """把光标停到功能区（画布外）：WinUI Paint 的笔刷光标预览圆与调粗细
+    后的画布中心尺寸指示圆都是**应用内渲染**，会被 BitBlt 截屏捕获——
+    测量前必须让光标离画布（预览即消），否则 diff bbox 被伪影撑大
+    （实测 53px 真笔宽被撑成 792px 假值）。move 只移动不点击，安全。"""
+    w, h = rect[2] - rect[0], rect[3] - rect[1]
+    safe_act({"action": "move",
+              "x": rect[0] + int(w * 0.45),
+              "y": rect[1] + int(h * 0.11),
+              "hwnd": hwnd, "settle_seconds": 0.1,
+              "capabilities": caps}, hwnd, tries=2)
+
+
+def set_brush_size(cell, hwnd, caps, rect, canvas):
+    """浮动滑杆点击设粗细 + 探针线实测闭环。返回实测笔宽 T（px），失败 None。
+
+    本版 Paint 画笔粗细没有功能区下拉（≡控件是形状线宽、无选中形状时
+    禁用），只有画布左侧浮动滑杆（_v11_recon 标定：轨道 x=59，
+    y=0.2789~0.6078 窗口分数，顶端最大；范围未知 → 对 f 二分收敛）。
+    探针放画布左缘留白带内的竖线（bbox 宽 = 笔宽），测量序列三步防伪影：
+    滑杆点击 → park_cursor 消掉中心指示圆 → 基线 → 探针 → park 消掉
+    光标预览圆 → 实拍 → Ctrl+Z → 复核画布干净（不净即中止）。
+    """
+    cx, cy, cw, ch = canvas
+    w, h = rect[2] - rect[0], rect[3] - rect[1]
+    sx = rect[0] + int(w * FRAC_SIZE_TRACK_X)
+    y_top = rect[1] + int(h * FRAC_SIZE_TRACK_TOP)
+    y_bot = rect[1] + int(h * FRAC_SIZE_TRACK_BOT)
+    px = cx + 30           # 画布左缘留白带（艺术框外 ~330px）
+    py1, py2 = cy + 120, cy + 220
+    lo = max(5.0, cell * 0.5)
+    hi = cell * 1.15
+    f = 0.5
+    best = 0
+    for it in range(6):
+        knob_y = int(y_top + f * (y_bot - y_top))
+        r = safe_act({"action": "click", "x": sx, "y": knob_y,
+                      "hwnd": hwnd, "settle_seconds": 0.15,
+                      "capabilities": caps}, hwnd)
+        if not (r.get("ok") and r.get("http_status") == 200):
+            print(f"  [size] 滑杆点击失败 iter={it}: {r.get('error')}",
+                  flush=True)
+            continue
+        park_cursor(hwnd, rect, caps)   # 消掉调粗细后的中心指示圆
+        time.sleep(0.45)
+        base = shot_png()
+        rd = draw([[px, py1], [px, py2]], 250, hwnd, caps, smooth=0)
+        park_cursor(hwnd, rect, caps)   # 消掉光标笔刷预览圆
+        time.sleep(0.3)
+        now = shot_png()
+        l0, t0 = max(0, cx), max(0, cy)
+        r1 = min(now.shape[1], cx + cw)
+        b1 = min(now.shape[0], cy + ch)
+        diff = cv2.absdiff(now[t0:b1, l0:r1], base[t0:b1, l0:r1])
+        gray = cv2.cvtColor(diff, cv2.COLOR_BGR2GRAY)
+        _, mask = cv2.threshold(gray, 20, 255, cv2.THRESH_BINARY)
+        pts = cv2.findNonZero(mask)
+        t_w = 0
+        if pts is not None:
+            _bx, _by, bw, bh = cv2.boundingRect(pts)
+            # 竖直探针：笔宽 ≈ bbox 宽（拖拽异常无竖向延展则记 0）
+            t_w = int(bw) if bh >= 40 else 0
+        hotkey("ctrl+z", hwnd, caps)
+        time.sleep(0.35)
+        clean = shot_png()
+        diff2 = cv2.absdiff(clean[t0:b1, l0:r1], base[t0:b1, l0:r1])
+        g2 = cv2.cvtColor(diff2, cv2.COLOR_BGR2GRAY)
+        _, m2 = cv2.threshold(g2, 20, 255, cv2.THRESH_BINARY)
+        residue = int(cv2.countNonZero(m2))
+        print(f"  [size] iter={it} f={f:.3f} T={t_w}px "
+              f"(target {lo:.0f}-{hi:.0f}) residue={residue}", flush=True)
+        if rd.get("http_status") != 200:
+            force_foreground(hwnd)
+        best = t_w
+        if residue >= 300:
+            print("  [size] 探针撤销后画布不净——中止，绝不带污作画", flush=True)
+            return None
+        if lo <= t_w <= hi:
+            return t_w
+        if t_w <= 0:
+            f = min(1.0, f + 0.25)          # 没线 → 往大调
+        elif t_w > hi:
+            f = (f + 1.0) / 2.0             # 太粗 → 二分向小
+        else:
+            f = f / 2.0 if f > 0.02 else 0.01  # 偏细 → 二分向大
+    print(f"  [size] 闭环未精确收敛，兜底使用实测 T={best}px", flush=True)
+    return best if 4 <= best <= cell * 1.6 else None
+
+
 def phase_pixel() -> None:
-    print("\n---- 方案二：像素风 ----", flush=True)
+    print(f"\n---- 方案二：高精度像素画 {GRID_N}x{GRID_N} ----", flush=True)
     pal, idx, usage = plan_pixels()
     active = [c for c in range(QUANT_COLORS) if usage[c] > 0]
-    check("P1 32x32 量化 ≤12 色", len(active) <= QUANT_COLORS
-          and idx.shape == (GRID_N, GRID_N),
+    check(f"P1 {GRID_N}x{GRID_N} 量化 ≤{QUANT_COLORS} 色",
+          len(active) <= QUANT_COLORS and idx.shape == (GRID_N, GRID_N),
           f"colors={len(active)} usage={[int(usage[c]) for c in active]}")
 
     paint = open_own_paint("pixel")
@@ -684,9 +993,10 @@ def phase_pixel() -> None:
     caps = {"allowed_windows": ["mspaint.exe"]}
     check("P3 画图强占前台", force_foreground(hwnd))
     time.sleep(0.6)
+    rect = win32gui.GetWindowRect(hwnd)
 
     img0 = shot_png()
-    canvas = detect_canvas(img0, win32gui.GetWindowRect(hwnd))
+    canvas = detect_canvas(img0, rect)
     check("P4 服务端像素检测画布", canvas is not None, f"canvas={canvas}")
     if not canvas:
         close_own_paint(paint, hwnd)
@@ -695,39 +1005,50 @@ def phase_pixel() -> None:
     side = int(min(cw, ch) * 0.9)
     box = (cx + (cw - side) // 2, cy + (ch - side) // 2, side)
     cell = side / float(GRID_N)
+    print(f"  艺术框 box={box} cell={cell:.2f}px", flush=True)
 
+    rec = CanvasRecorder((max(0, cx), max(0, cy), cw, ch), fps=4.0,
+                         max_frames=2600 if GRID_N <= 64 else 8000)
+    rec.start()
     keeper = FocusKeeper(hwnd)
     keeper.start()
     try:
-        # ---- 网格：33+33 条黑线（铅笔双线防泄漏） ----
-        hk = hotkey("p", hwnd, caps)
-        check("P5 快捷键 P（铅笔）", hk.get("ok") is True
-              and hk.get("http_status") == 200)
-        grid_pts = []
-        for i in range(GRID_N + 1):
-            gx = int(round(box[0] + i * cell))
-            grid_pts.append([[gx, box[1]], [gx, box[1] + side]])
-            gy = int(round(box[1] + i * cell))
-            grid_pts.append([[box[0], gy], [box[0] + side, gy]])
-        t0 = time.time()
-        ok_lines = 0
-        for k, line in enumerate(grid_pts):
-            off = [[p[0] + 1, p[1] + 1] for p in line]
-            r1 = draw(line, 200, hwnd, caps, smooth=0)
-            r2 = draw(off, 200, hwnd, caps, smooth=0)
-            if (r1.get("ok") and r1.get("http_status") == 200
-                    and r2.get("ok") and r2.get("http_status") == 200):
-                ok_lines += 1
-            if k % 16 == 15:
-                print(f"  网格进度: {k+1}/{len(grid_pts)} "
-                      f"({time.time()-t0:.0f}s)", flush=True)
-        check("P6 网格 33+33 双线完成", ok_lines == len(grid_pts),
-              f"{ok_lines}/{len(grid_pts)} ({time.time()-t0:.0f}s)")
+        # ---- 工具：画笔（默认激活；显式重选防状态漂移） ----
+        r = safe_act({"action": "click",
+                      "x": rect[0] + int((rect[2] - rect[0]) * FRAC_BRUSH_MAIN[0]),
+                      "y": rect[1] + int((rect[3] - rect[1]) * FRAC_BRUSH_MAIN[1]),
+                      "hwnd": hwnd, "settle_seconds": 0.2,
+                      "capabilities": caps}, hwnd)
+        check("P5 选中画笔工具（画笔库主按钮）", r.get("http_status") == 200)
+
+        # ---- 粗细：滑杆+探针闭环 ----
+        stroke_w = set_brush_size(cell, hwnd, caps, rect, canvas)
+        size_ok = (stroke_w is not None
+                   and 5 <= stroke_w <= cell * 1.6)
+        check("P6 笔宽闭环（滑杆+探针，5≤T≤cell×1.6）", size_ok,
+              f"T={stroke_w}px cell={cell:.1f}px")
+        if not size_ok:
+            return
+        # 尺寸环可能扰动画布几何 → 重检画布，漂移即重设艺术框
+        img_c2 = shot_png()
+        canvas2 = detect_canvas(img_c2, win32gui.GetWindowRect(hwnd))
+        if canvas2 and (abs(canvas2[0] - cx) > 24 or abs(canvas2[1] - cy) > 24
+                        or abs(canvas2[2] - cw) > 24
+                        or abs(canvas2[3] - ch) > 24):
+            print(f"  [canvas] 几何漂移 {canvas} -> {canvas2}，重设艺术框",
+                  flush=True)
+            cx, cy, cw, ch = canvas2
+            side = int(min(cw, ch) * 0.9)
+            box = (cx + (cw - side) // 2, cy + (ch - side) // 2, side)
+            cell = side / float(GRID_N)
+        passes = 1 if stroke_w >= cell else int(math.ceil(cell / stroke_w))
+        print(f"  每 run {passes} 道覆盖（T={stroke_w}px, cell={cell:.1f}px）",
+              flush=True)
 
         # ---- 色板检测 + 颜色映射 ----
         img_grid = shot_png()
-        swatches = detect_swatches(img_grid, win32gui.GetWindowRect(hwnd))
-        check("P7 色板实心点检测（≥6）", len(swatches) >= 6,
+        swatches = detect_swatches(img_grid, rect)
+        check("P7 色板实心点检测（≥8）", len(swatches) >= 8,
               f"n={len(swatches)} sample={[(s[0], s[1], s[2]) for s in swatches[:4]]}")
         swatch_of, dist_of = {}, {}
         for c in active:
@@ -745,106 +1066,184 @@ def phase_pixel() -> None:
         check("P8 量化色→色板映射（全部有着落）",
               len(swatch_of) == len(active),
               f"{len(swatch_of)}/{len(active)}")
+        if len(swatch_of) != len(active):
+            return
 
-        # ---- 油漆桶（本版 B=填充桶，鲸鱼实测） + 逐格填充 ----
-        hk = hotkey("b", hwnd, caps)
-        check("P9 快捷键 B（油漆桶）", hk.get("ok") is True
-              and hk.get("http_status") == 200)
+        # ---- run-length 计划 ----
+        groups = plan_runs(idx, swatch_of)
+        total_runs = sum(len(v[1]) for v in groups.values())
+        non_white_cells = sum((j1 - j0 + 1) for v in groups.values()
+                              for (_i, j0, j1) in v[1])
+        order = sorted(groups.items(), key=lambda kv: -len(kv[1][1]))
+        print(f"  run 计划: {total_runs} 条 run / {len(groups)} 组颜色 / "
+              f"非白格 {non_white_cells}", flush=True)
+        check("P9 run 合并计划合理（防逐格点击）",
+              max(30, GRID_N // 2) <= total_runs
+              <= GRID_N * GRID_N // 3
+              and non_white_cells >= 0.05 * GRID_N * GRID_N,
+              f"runs={total_runs} (vs {GRID_N*GRID_N} 格逐点), "
+              f"压缩率 {GRID_N*GRID_N / max(1, total_runs):.1f}x")
 
-        groups = {}
-        for i in range(GRID_N):
-            for j in range(GRID_N):
-                groups.setdefault(int(idx[i, j]), []).append((i, j))
-        order = sorted(groups, key=lambda c: -len(groups[c]))
-
-        def cell_xy(ij):
-            i, j = ij
-            return (int(round(box[0] + (j + 0.5) * cell)),
-                    int(round(box[1] + (i + 0.5) * cell)))
-
-        def is_white(c):
-            sw = swatch_of.get(c)
-            if sw is None:
-                return True
-            return all(v > 232 for v in (sw[2][2], sw[2][1], sw[2][0]))
-
-        todo = sum(len(groups[c]) for c in order if not is_white(c))
-        print(f"  待填充格子: {todo}/{GRID_N*GRID_N} "
-              f"（白格跳过 {GRID_N*GRID_N - todo}）", flush=True)
         t0 = time.time()
-        filled, failed = 0, 0
-        seq = 0
-        for c in order:
-            if is_white(c):
-                continue
-            sx, sy, _bgr = swatch_of[c]
+        drawn, failed = 0, 0
+
+        def paint_group(sw, runs):
+            nonlocal drawn, failed
+            sx, sy, _bgr = sw
             r = safe_act({"action": "click", "x": sx, "y": sy,
-                          "hwnd": hwnd, "settle_seconds": 0.15,
+                          "hwnd": hwnd, "settle_seconds": 0.12,
                           "capabilities": caps}, hwnd)
             if not (r.get("ok") and r.get("http_status") == 200):
-                failed += len(groups[c])
-                continue
-            for ij in groups[c]:
-                px, py = cell_xy(ij)
-                r = safe_act({"action": "click", "x": px, "y": py,
-                              "hwnd": hwnd, "settle_seconds": 0.05,
-                              "capabilities": caps}, hwnd)
-                seq += 1
-                if r.get("ok") and r.get("http_status") == 200:
-                    filled += 1
-                else:
-                    failed += 1
-                if seq % 64 == 0:
-                    print(f"  填充进度: {seq} 次动作 "
-                          f"({time.time()-t0:.0f}s)", flush=True)
-                if seq == 32:  # 中途守卫：网格缺口会整幅淹没，早停别浪费时间
-                    time.sleep(0.2)
-                    probe = shot_png()
-                    hits, tot = sample_cells(probe, canvas, box, pal, idx,
-                                             swatch_of, n=6, tol=80)
-                    if tot >= 3 and hits < max(1, tot // 3):
-                        print("  [ABORT] 中途抽样命中率过低 "
-                              f"({hits}/{tot})——疑似填充泄漏，停止防恶化",
-                              flush=True)
-                        check("P10 填充中途守卫（抽样颜色命中）", False,
-                              f"hits={hits}/{tot}")
-                        raise RuntimeError("pixel fill leak")
-        dt = time.time() - t0
-        check("P10 逐格填充完成", failed <= max(4, todo // 40),
-              f"filled={filled} failed={failed} ({dt:.0f}s, "
-              f"{dt / max(1, seq):.2f}s/动作)")
+                failed += len(runs) * passes
+                return 0
+            n0 = drawn
+            rows: dict = {}
+            for run in runs:
+                rows.setdefault(run[0], []).append(run)
+            seq = 0
+            for i in sorted(rows):
+                line_runs = rows[i]
+                if i % 2 == 1:
+                    line_runs = line_runs[::-1]  # 蛇形减少空走
+                for run in line_runs:
+                    pts_list = run_passes(run, cell, box, stroke_w, passes)
+                    for pts in pts_list:
+                        span = abs(pts[1][0] - pts[0][0])
+                        dur = int(min(700, max(100, span * 1.8)))
+                        rr = draw(pts, dur, hwnd, caps, smooth=0)
+                        seq += 1
+                        if rr.get("ok") and rr.get("http_status") == 200:
+                            drawn += 1
+                        else:
+                            force_foreground(hwnd)
+                            rr = draw(pts, dur, hwnd, caps, smooth=0)
+                            if rr.get("ok") and rr.get("http_status") == 200:
+                                drawn += 1
+                            else:
+                                failed += 1
+            return drawn - n0
 
-        time.sleep(0.6)
-        img1 = shot_png()
-        l, t = max(0, cx), max(0, cy)
-        rr = min(img1.shape[1], cx + cw)
-        bb = min(img1.shape[0], cy + ch)
-        crop1 = img1[t:bb, l:rr]
+        first_key, (first_sw, first_runs) = order[0]
+        n_first = paint_group(first_sw, first_runs)
+        # ---- 首组守卫：细线灾难（滑杆失效画成线框）在此早停 ----
+        park_cursor(hwnd, rect, caps)  # 光标预览圆是应用内渲染，先停笔离画布
+        time.sleep(0.35)
+        probe = shot_png()
         l0, t0c = max(0, cx), max(0, cy)
-        base = img_grid[t0c:t0c + (bb - t0c), l0:l0 + (rr - l0)]
+        r1 = min(probe.shape[1], cx + cw)
+        b1 = min(probe.shape[0], cy + ch)
+        crop = probe[t0c:b1, l0:r1]
+        diff = cv2.absdiff(crop, img0[t0c:b1, l0:r1])
+        g = cv2.cvtColor(diff, cv2.COLOR_BGR2GRAY)
+        _, m = cv2.threshold(g, 14, 255, cv2.THRESH_BINARY)
+        changed = int(cv2.countNonZero(m))
+        first_cells = sum((j1 - j0 + 1) for (_i, j0, j1) in first_runs)
+        expect = first_cells * cell * cell
+        ratio = changed / max(1.0, expect)
+        print(f"  首组 {first_key}: runs={len(first_runs)} changed={changed}px "
+              f"expect≈{expect:.0f} ratio={ratio:.2f}", flush=True)
+        check("P10 首组填充覆盖率（防细线线框灾难）", ratio >= 0.45,
+              f"ratio={ratio:.2f}")
+        if ratio < 0.45:
+            return  # 工具异常，早停防恶化
+
+        for key, (sw, runs) in order[1:]:
+            paint_group(sw, runs)
+        dt = time.time() - t0
+        total_strokes = drawn + failed
+        check("P11 全部 run 拖拽完成（失败 ≤2%）",
+              failed <= max(2, int(0.02 * total_strokes)),
+              f"drawn={drawn} failed={failed} ({dt:.0f}s, "
+              f"{dt / max(1, total_strokes):.2f}s/轨迹, "
+              f"{total_strokes} 动作 vs {GRID_N*GRID_N} 逐格)")
+
+        park_cursor(hwnd, rect, caps)
+        time.sleep(0.5)
+        img1 = shot_png()
+        l0, t0c = max(0, cx), max(0, cy)
+        r1 = min(img1.shape[1], cx + cw)
+        b1 = min(img1.shape[0], cy + ch)
+        crop1 = img1[t0c:b1, l0:r1]
+        base = img0[t0c:b1, l0:r1]
         diff = cv2.absdiff(base[:crop1.shape[0], :crop1.shape[1]],
                            crop1[:base.shape[0], :base.shape[1]])
         gray = cv2.cvtColor(diff, cv2.COLOR_BGR2GRAY)
         _, mask = cv2.threshold(gray, 14, 255, cv2.THRESH_BINARY)
         count = int(cv2.countNonZero(mask))
-        check("P11 填充产生大量色块像素（≥30000px）", count >= 30000,
-              f"changed={count}px")
+        check("P12 成品产生大量色块像素（≥非白面积 50%）",
+              count >= 0.5 * non_white_cells * cell * cell,
+              f"changed={count}px expect≈{non_white_cells * cell * cell:.0f}")
         hits, tot = sample_cells(crop1, canvas, box, pal, idx,
-                                 swatch_of, n=40, tol=70)
-        check("P12 40 格抽样颜色比对（命中率 ≥60%）",
-              tot >= 12 and hits >= 0.6 * tot, f"hits={hits}/{tot}")
-        cv2.imwrite(str(OUT_PIXEL), crop1)
+                                 swatch_of, n=60, tol=70)
+        check("P13 60 格抽样颜色比对（命中率 ≥60%）",
+              tot >= 20 and hits >= 0.6 * tot, f"hits={hits}/{tot}")
+        # 成品裁艺术框（画布顶缘探针带已撤销，双保险）
+        ax, ay, asize = box
+        art = img1[ay:ay + asize, ax:ax + asize]
+        cv2.imwrite(str(OUT_PIXEL), art)
         print("  ART pixel: " + str(OUT_PIXEL), flush=True)
+
+        # ---- is_painting 熔断豁免双向实证（同点连发，点选已填同色格心） ----
+        proof_pt = None
+        for i in range(GRID_N):
+            for j in range(GRID_N):
+                c = int(idx[i, j])
+                sw = swatch_of.get(c)
+                if sw is not None and not _is_white_swatch(sw):
+                    proof_pt = [int(box[0] + (j + 0.5) * cell),
+                                int(box[1] + (i + 0.5) * cell)]
+                    break
+            if proof_pt:
+                break
+        if proof_pt:
+            ok_n = 0
+            for _ in range(55):
+                rr = draw([proof_pt, [proof_pt[0] + 1, proof_pt[1]]],
+                          100, hwnd, caps, smooth=0)
+                if rr.get("http_status") == 200:
+                    ok_n += 1
+                else:
+                    break
+            check("P16 is_painting=True 同点55连发零熔断（长绘图不被截断）",
+                  ok_n == 55, f"200×{ok_n}/55")
+            n429 = 0
+            for _ in range(56):
+                rr = draw([proof_pt, [proof_pt[0] + 1, proof_pt[1]]],
+                          100, hwnd, caps, smooth=0, is_painting=False)
+                if rr.get("http_status") == 429:
+                    n429 += 1
+            check("P17 is_painting=False 第51次触发 429 熔断（防线未削弱）",
+                  n429 >= 1, f"429×{n429}/56")
+            rr = requests.post(
+                "http://127.0.0.1:8030/api/ghost/emergency_stop/release",
+                headers={"X-Ghost-Token": TOKEN}, timeout=10)
+            check("P18 release 解冻复原", rr.status_code == 200,
+                  f"http={rr.status_code}")
     except RuntimeError:
         pass
     finally:
         keeper.stop()
+        n_frames = rec.stop()
+        ok_v = compose_video(rec.frames, VID_PIXEL)
+        ok_g = compose_gif(rec.frames, GIF_PIXEL,
+                           every=2 if GRID_N <= 64 else 6)
+        check("P14 全程录屏合成像素画 MP4+GIF",
+              ok_v and n_frames >= 30,
+              f"frames={n_frames} errors={rec.errors} "
+              f"mp4={ok_v} gif={ok_g} -> {VID_PIXEL.name}")
         try:
-            cv2.imwrite(str(OUT_PIXEL), shot_png()[
-                max(0, cy):cy + ch, max(0, cx):cx + cw])
+            park_cursor(hwnd, rect, caps)
+            time.sleep(0.3)
+            _ax = box[0]
+            _ay = box[1]
+            _as = box[2]
+            cv2.imwrite(str(OUT_PIXEL), shot_png()[max(0, _ay):_ay + _as,
+                                                    max(0, _ax):_ax + _as])
         except Exception:  # noqa: BLE001
             pass
-    check("P13 清场：像素画图窗口已销毁", close_own_paint(paint, hwnd))
+        # 清场必须在 finally：任何早退路径（尺寸环/覆盖率守卫 return）
+        # 都不得泄漏自建 Paint（首轮/三轮实证泄漏过两个孤儿进程）
+        check("P15 清场：像素画图窗口已销毁", close_own_paint(paint, hwnd))
 
 
 # ---- VLM 识图反馈 -----------------------------------------------------------
@@ -858,17 +1257,17 @@ PARTIAL_WORDS = ("头发", "hair", "眼睛", "eyes", "五官", "表情", "卡通
 PIXEL_WORDS = ("像素", "pixel", "马赛克", "mosaic", "游戏", "game", "格",
                "方块")
 
-
-import re
+import re  # noqa: E402
 
 _COORD_ANS = re.compile(r"\(\s*\d+\s*,\s*\d+\s*\)")
 
 
 def vlm_phase(tag: str, path: Path, extra_words=(),
+              q1: str = "这张图里画了什么？",
               q2: str = "这幅画是什么风格的？用一短句描述。",
               context: str = "") -> None:
-    q1 = context + "这张图里画了什么？"
-    r = vlm_describe(path, q1)
+    q = context + q1
+    r = vlm_describe(path, q)
     d1 = str(r.get("description") or "")
     if _COORD_ANS.search(d1):
         # 2B 把色块网格当软件截图会输出 grounding 坐标——补语境重试一次
@@ -893,8 +1292,8 @@ def vlm_phase(tag: str, path: Path, extra_words=(),
 
 
 def main() -> int:
-    print(f"== moray-ghost v0.10 doubao portrait reproduction "
-          f"(mode={MODE}) ==", flush=True)
+    print(f"== moray-ghost doubao portrait reproduction "
+          f"(mode={MODE}, grid={GRID_N}) ==", flush=True)
     srv = None
     try:
         check("0 前提：豆包原图存在", ART.is_file(), str(ART))
@@ -914,6 +1313,7 @@ def main() -> int:
             phase_pixel()
             if OUT_PIXEL.is_file():
                 vlm_phase("PIXEL", OUT_PIXEL, extra_words=PIXEL_WORDS,
+                          q1="这张图里画的是谁？",
                           q2="图里主要有哪些颜色？请列出两三种。",
                           context="这是一幅手绘的像素画作品。")
     finally:

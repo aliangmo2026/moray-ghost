@@ -409,6 +409,8 @@ def _run_action_impl(payload: Dict[str, Any]) -> Dict[str, Any]:
         audit_extra = " points=" + str(len(trajectory))
     elif action == "scroll" and scroll_dy is not None:
         audit_extra = " dy=" + str(scroll_dy) + (" smooth" if scroll_smooth else "")
+    if payload.get("is_painting"):
+        audit_extra += " is_painting"
     LOG.info("input_audit channel=native action=%s resolved=%s monitor=%s%s",
              action, resolved_physical, monitor, audit_extra)
 
@@ -442,15 +444,19 @@ def _run_action_impl(payload: Dict[str, Any]) -> Dict[str, Any]:
                     "request timed out before execution; aborted, no input sent",
                     phase="aborted", released=True, frozen=True)
                 return
-            # 频率熔断：只登记真正要上桌面的动作（持锁串行，计数无歧义）
-            fp = breaker.make_fingerprint(
-                "native", action, x_req, y_req,
-                text if action in ("type", "hotkey") else None)
-            trip = breaker.hit(fp)
-            if trip is not None:
-                box["trip"] = trip
-                box["fp"] = fp
-                return
+            # 频率熔断：只登记真正要上桌面的动作（持锁串行，计数无歧义）。
+            # is_painting（draw_trajectory 长时绘图任务）豁免指纹计数：合法
+            # 绘图坐标天然离散、不构成死循环；冻结/归属/前台/Fail-Safe/硬超时
+            # 等其余门禁一道不少，审计照记（input_audit 行带 is_painting 标记）。
+            if not payload.get("is_painting"):
+                fp = breaker.make_fingerprint(
+                    "native", action, x_req, y_req,
+                    text if action in ("type", "hotkey") else None)
+                trip = breaker.hit(fp)
+                if trip is not None:
+                    box["trip"] = trip
+                    box["fp"] = fp
+                    return
             try:
                 box["r"] = _run_locked_action(
                     action, xi, yi, text, keys, monitor, settle,

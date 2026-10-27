@@ -51,6 +51,11 @@ class DrawTrajectoryBody(BaseModel):
     palette_region: Optional[List[float]] = Field(
         default=None,
         description="色板搜索区（窗口相对分数 [x0,y0,x1,y1]，默认整宽×顶部 30%）")
+    is_painting: bool = Field(
+        default=False,
+        description="长时绘图任务标识：豁免频率熔断的指纹计数（合法绘图的"
+                    "离散坐标不会构成死循环）；冻结/归属/前台/Fail-Safe/"
+                    "硬超时等其余安全门禁一道不少，审计照记")
     capabilities: Optional[Dict[str, Any]] = None
 
 
@@ -208,7 +213,7 @@ def draw_trajectory(body: DrawTrajectoryBody,
         drag_result = controller.run_action({
             "action": "drag", "points": prepared,
             "duration_ms": body.duration_ms, "hwnd": hwnd,
-            "monitor": body.monitor,
+            "monitor": body.monitor, "is_painting": body.is_painting,
             "settle_seconds": body.settle_seconds, "capabilities": caps})
     except ActionError as exc:
         return _action_error(exc)
@@ -223,6 +228,7 @@ def draw_trajectory(body: DrawTrajectoryBody,
                    "points_sent": len(prepared),
                    "smooth_iterations": body.smooth_iterations,
                    "closed": body.closed,
+                   "is_painting": body.is_painting,
                    "duration_ms": body.duration_ms},
         "result": drag_result,
         "elapsed_ms": int((time.perf_counter() - t0) * 1000),

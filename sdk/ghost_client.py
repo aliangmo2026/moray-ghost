@@ -212,12 +212,14 @@ class DrawAPI(_Namespace):
                    window: Optional[str] = None,
                    duration_ms: int = 800, smooth_iterations: int = 2,
                    closed: bool = False, color_required: bool = False,
-                   settle_seconds: float = 0.1,
+                   settle_seconds: float = 0.1, is_painting: bool = False,
                    monitor: int = 1, **kw: Any) -> Dict[str, Any]:
         """画一条平滑轨迹。points 为物理像素 [[x,y],...]（≥2 点）；
         color 为颜色名（blue/red/green/yellow/orange/purple/black/white）
         或 #RRGGBB。closed=True 会让首尾相接（画图软件会并成闭合形状，
-        默认开放）。返回 {ok, color:{found,clicked,fallback}, stroke:{...},
+        默认开放）。is_painting=True 标记长时绘图任务：豁免频率熔断指纹
+        计数（其余安全门禁不变），防画到一半被熔断截断。
+        返回 {ok, color:{found,clicked,fallback}, stroke:{...},
         result:{...drag 结果}}。"""
         body: Dict[str, Any] = {
             "points": [[float(p[0]), float(p[1])] for p in points],
@@ -226,6 +228,7 @@ class DrawAPI(_Namespace):
             "closed": bool(closed),
             "color_required": bool(color_required),
             "settle_seconds": settle_seconds,
+            "is_painting": bool(is_painting),
             "monitor": monitor,
         }
         if color is not None:
