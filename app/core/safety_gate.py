@@ -15,6 +15,9 @@
    （转账/删除/格式化/退出登录…）；controller 点击前只 OCR 落点控件内部，
    命中 → 409 PENDING_APPROVAL（零输入），配置 GHOST_APPROVAL_TOKEN 后
    人工审批令牌才放行。规则与边界见 docs/v0.12-design.md。
+5. System1 弹窗规则库（v0.15 快思考）：system1_match() 纯文本/几何判定
+   「弹窗特征词 + 关闭类按钮 同窗共现」，供 vl_driver.system1_reflex 在
+   任务挂起前本地消解弹窗——本层仍只判定不产生输入，点击走 controller。
 
 实证（本机 Win11 探针，2026-10）：cmd.exe 的可见控制台窗口宿主是
 WindowsTerminal.exe（class CASCADIA_HOSTING_WINDOW_CLASS；ConsoleWindowClass
@@ -298,3 +301,144 @@ def approval_matches(token: Any) -> bool:
     if not config.APPROVAL_TOKEN:
         return False
     return hmac.compare_digest(str(token or ""), config.APPROVAL_TOKEN)
+
+
+# ---- 5) System1 弹窗规则库（v0.15 快思考） -------------------------------
+#
+# 与 1)-4) 的关系：前面都是"拒绝/审批"型门禁；System1 是"主动消解"型反射
+# ——任务在挂起边界（require_vision / 遮挡失败）上，先本地判定"这是不是一个
+# 可以自动关掉的弹窗"，是则由 vl_driver.system1_reflex 走 controller 安全
+# 管道点击关闭。本层仍只做纯文本判定，不产生任何输入。
+#
+# 命中 = 特征词 AND 关闭按钮（同窗共现，缺一不判——宁可漏关，不可乱点）：
+# - 特征词：窗口标题或任一 OCR 文本**包含**触发词（子串；英文大小写不敏感）；
+# - 关闭按钮：按钮样式短文本（尺寸见 SYSTEM1_BTN_*）归一化后**精确等于**
+#   关闭类词——正文句子里出现"关闭"不算按钮（防止点到正文中的词）。
+SYSTEM1_TRIGGER_TOKENS = (
+    # 用户钦定四词 + 同族扩展（更新/隐私/每日提示类弹窗）
+    "软件更新", "软件升级", "发现新版本", "有新版本", "立即升级", "升级提醒",
+    "广告", "隐私协议", "隐私政策", "每日提示", "每日一言",
+    # 英文（_s1_contains 大小写不敏感）
+    "software update", "software upgrade", "new version", "upgrade now",
+    "privacy policy", "privacy agreement", "daily tip",
+)
+
+# 关闭类按钮：列表顺序 = 点击优先级。关闭/× 最安全排最前；"同意"垫底
+# （同意=接受条款，只在没有任何关闭/推迟/取消按钮时才作为最后手段，
+# 且点击后必须复检弹窗是否真的消失，否则按未消解回退挂起）。
+SYSTEM1_DISMISS_BUTTONS = (
+    "关闭", "关闭窗口", "×", "✕", "✖", "x",
+    "close",
+    "稍后", "稍后再说", "以后再说", "暂不", "稍后提醒", "later", "not now",
+    "取消", "拒绝", "cancel", "decline",
+    "我知道了", "知道了",
+    "同意", "agree",
+)
+
+# 按钮样式启发式（OCR 元素 bbox 尺寸，物理像素）：过小不像按钮，
+# 过大说明是文本块（正文里的"关闭"整句被读成一个元素时靠它排除）。
+SYSTEM1_BTN_MIN_W, SYSTEM1_BTN_MAX_W = 10, 360
+SYSTEM1_BTN_MIN_H, SYSTEM1_BTN_MAX_H = 8, 90
+
+# 弹窗窗口特征：面积占所在屏比例上限（对话框体量；最大化浏览器/主窗口
+# 即便含触发词也直接排除，防在大窗里乱点）。
+SYSTEM1_MAX_WINDOW_AREA_RATIO = 0.45
+
+# 窗口类排除：控制台宿主不是弹窗（测试/运维控制台输出里可能恰好同时出现
+# 特征词与"关闭"字样——绝不允许反射脑去点控制台）。
+SYSTEM1_EXCLUDED_WINDOW_CLASSES = frozenset({
+    "ConsoleWindowClass", "CASCADIA_HOSTING_WINDOW_CLASS",
+    "VirtualConsoleClass",
+})
+
+
+def _s1_compact(text: Any) -> str:
+    """去所有空白（OCR 常把「关 闭」读成带空格）。"""
+    return "".join(str(text or "").split())
+
+
+def _s1_is_ascii(s: str) -> bool:
+    return all(ord(c) < 128 for c in s)
+
+
+def _s1_contains(haystack: str, token: str) -> bool:
+    """特征词包含判定：中文子串；英文大小写不敏感（两侧都去空白）。"""
+    h, t = _s1_compact(haystack), _s1_compact(token)
+    if not t:
+        return False
+    if _s1_is_ascii(t):
+        return t.lower() in h.lower()
+    return t in h
+
+
+def _s1_button_hit(elem_text: str, token: str) -> bool:
+    """按钮词精确判定：归一化后相等（英文忽略大小写）——子串不算。"""
+    e, t = _s1_compact(elem_text), _s1_compact(token)
+    if not e or not t:
+        return False
+    if _s1_is_ascii(t):
+        return e.lower() == t.lower()
+    return e == t
+
+
+def system1_title_hit(title: str) -> Optional[str]:
+    """窗口标题触发词预筛（零 OCR 成本）：命中返回特征词，否则 None。"""
+    for tok in SYSTEM1_TRIGGER_TOKENS:
+        if _s1_contains(str(title or ""), tok):
+            return tok
+    return None
+
+
+def system1_match(elements: Iterable[Any],
+                  title: Optional[str] = None) -> Dict[str, Any]:
+    """弹窗规则判定（纯函数）：特征词 + 关闭按钮 同窗共现。
+
+    elements: [{"text","bbox","center"}, ...]（OCR 元素表，物理屏幕坐标）；
+    title: 窗口标题（win32 直读，不依赖 OCR，常含「软件更新」等触发词）。
+    返回 {"matched","reason","trigger","buttons"}：
+    - matched=True 时 buttons 按点击优先级排序，每项
+      {"text","bbox","center","token","priority"}（center 为点击落点）；
+    - reason: ok | no_trigger | no_button。
+    """
+    items = [e for e in (elements or [])
+             if str((e or {}).get("text") or "").strip()]
+    # 1) 特征词：标题优先（可靠、免 OCR），其次任一元素文本
+    trigger: Optional[Dict[str, str]] = None
+    for tok in SYSTEM1_TRIGGER_TOKENS:
+        if _s1_contains(str(title or ""), tok):
+            trigger = {"token": tok, "source": "title"}
+            break
+    if trigger is None:
+        for e in items:
+            for tok in SYSTEM1_TRIGGER_TOKENS:
+                if _s1_contains(str(e.get("text") or ""), tok):
+                    trigger = {"token": tok, "source": "text"}
+                    break
+            if trigger:
+                break
+    if trigger is None:
+        return {"matched": False, "reason": "no_trigger",
+                "trigger": None, "buttons": []}
+    # 2) 关闭按钮：精确匹配 + 按钮尺寸启发式，按优先级排序
+    found: List[Dict[str, Any]] = []
+    for prio, tok in enumerate(SYSTEM1_DISMISS_BUTTONS):
+        for e in items:
+            bbox = e.get("bbox") or [0, 0, 0, 0]
+            w, h = int(bbox[2]), int(bbox[3])
+            if not (SYSTEM1_BTN_MIN_W <= w <= SYSTEM1_BTN_MAX_W
+                    and SYSTEM1_BTN_MIN_H <= h <= SYSTEM1_BTN_MAX_H):
+                continue
+            if not _s1_button_hit(str(e.get("text") or ""), tok):
+                continue
+            center = e.get("center") or [int(bbox[0]) + w // 2,
+                                         int(bbox[1]) + h // 2]
+            found.append({"text": str(e.get("text") or "").strip(),
+                          "bbox": [int(v) for v in bbox],
+                          "center": [int(center[0]), int(center[1])],
+                          "token": tok, "priority": prio})
+    if not found:
+        return {"matched": False, "reason": "no_button",
+                "trigger": trigger, "buttons": []}
+    found.sort(key=lambda b: b["priority"])  # 稳定排序：同优先级保持 OCR 顺序
+    return {"matched": True, "reason": "ok", "trigger": trigger,
+            "buttons": found}

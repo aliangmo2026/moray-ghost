@@ -4,7 +4,9 @@
 （start/resume 先入 FIFO 队列（task_queue），单调度线程串行派发；
  degraded ⇄ running 经 resume 重新排队）。
 - 步骤类型：macro（走 runner 完整重放管道）/ action（走 controller 安全管道）/
-  wait（可被 cancel 打断）/ require_vision（degraded 挂起，等主仓视觉后 resume 跳过）。
+  wait（可被 cancel 打断）/ require_vision（v0.15：先试 System1 本地反射——
+  弹窗命中即本地关闭并继续，不返回 degraded；未命中/被拒 → 照旧 degraded
+  挂起，等主仓视觉后 resume 跳过）。
 - v0.7 能力令牌（最小权限）：create_task 强制要求 capabilities.allowed_windows
   （含 action/macro 输入步骤时必须非空）；执行每个输入步骤时注入动作 payload，
   由 controller 的锁前/锁内门禁核对目标窗口进程。
@@ -28,8 +30,8 @@ import uuid
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
-from . import audit_sink, environment, janitor, safety_gate, task_queue
-from . import window_locator
+from . import audit_sink, config, environment, janitor, safety_gate, task_queue
+from . import vl_driver, window_locator
 from .controller import ActionError, run_action
 from .macro_runner import ReplayError, replay as macro_replay
 
@@ -450,9 +452,25 @@ def _run_step(task: TaskRun, step: Dict[str, Any]) -> Dict[str, Any]:
             time.sleep(0.15)
         return {"waited_ms": ms}
     if kind == "require_vision":
+        # v0.15 System 1 快思考：挂起前先试本地反射——弹窗命中即本地关闭，
+        # 本步直接完成、任务继续（不返回 degraded）；未命中/被拒/失败 → 走
+        # 下面的旧路径照常挂起（行为与 v0.14 完全一致）。
+        s1 = None
+        if config.SYSTEM1_AUTO_DISMISS:
+            try:
+                s1 = vl_driver.system1_reflex(reason="require_vision")
+            except Exception as exc:  # noqa: BLE001 反射故障绝不打断任务流
+                s1 = {"ok": False, "enabled": True, "dismissed": False,
+                      "reason": "reflex_error: " + type(exc).__name__,
+                      "detail": str(exc)[:200], "source": "require_vision"}
+            if s1 and s1.get("dismissed"):
+                audit_sink.write("system1_vision_skip", task_id=task.task_id,
+                                 step_id=step.get("step_id"), system1=s1)
+                return {"system1": s1, "prompt": step.get("prompt")}
         raise StepFailure(fail_class="REQUIRE_VISION",
                           detail="awaiting main-repo vision",
-                          await_vision=True, prompt=step.get("prompt"))
+                          await_vision=True, prompt=step.get("prompt"),
+                          **({"system1": s1} if s1 else {}))
     raise StepFailure(fail_class="INTERNAL_ERROR",
                       detail="unknown kind " + repr(kind))
 

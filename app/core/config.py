@@ -55,6 +55,13 @@ WATCHDOG_ENABLED = os.getenv("GHOST_WATCHDOG", "true").strip().lower() in (
 # 实测挂机期间截图无界累积到 13,594 张 / 3.4GB——挂机数周必然撑爆磁盘。
 SHOT_MAX_FILES = int(os.getenv("GHOST_SHOT_MAX_FILES", "2000"))
 
+# ---- v0.15 快慢双系统（System 1 微型反射脑） ------------------------------
+# 弹窗本地自动消解：require_vision 挂起前，本地 OCR 规则命中「弹窗特征词 +
+# 关闭类按钮 同窗共现」→ 直接本地点击关闭，任务继续（不返回 degraded）。
+# false/0/off = 关闭（退回 v0.14 行为：一律挂起等主仓视觉）。
+SYSTEM1_AUTO_DISMISS = os.getenv("GHOST_SYSTEM1_AUTO_DISMISS", "true").strip().lower() \
+    in ("1", "true", "yes", "on")
+
 # ---- v0.8.0 MCP 多模态感知（VL Driver） ------------------------------------
 
 # 感知后端：auto（默认：llama 可用→llama，否则 ocr，否则 native）|

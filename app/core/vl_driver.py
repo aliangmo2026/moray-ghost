@@ -28,20 +28,30 @@ browser_driver），原生窗口 → "native"（走本驱动 + 安全管道点�
 
 匹配铁律 find_control()：0 命中 → 404 VL_ELEMENT_NOT_FOUND；多命中 →
 409 VL_AMBIGUOUS —— 与 CDP ELEMENT_AMBIGUOUS 同哲学，绝不猜。
+
+v0.15 System 1 微型反射脑（system1_reflex）：任务在挂起/降级边界先本地
+"看一眼"——OCR 规则（safety_gate.system1_match）命中「弹窗特征词 + 关闭
+按钮 同窗共现」就走 controller 安全管道点掉，任务继续；未命中/被拒/复检
+未过则完全回退 v0.14 旧行为（挂起等主仓）。本层只负责编排，判定规则在
+safety_gate，点击在 controller（唯一动桌面咽喉），绝不绕过任何门禁。
 """
 from __future__ import annotations
 
 import copy
 import json
+import logging
 import os
 import re
 import threading
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
+import win32con
 import win32gui
 
 from . import config, safety_gate, window_locator
+
+LOG = logging.getLogger("moray-ghost.vl_driver")
 
 _cuda_dirs_added = False
 _gpu_offload: Optional[bool] = None
@@ -2128,7 +2138,7 @@ def describe_backend() -> str:
 
 
 def guard_status() -> Dict[str, Any]:
-    """Ghost Guard / GUI RAG 配置回显（供 /health；绝不泄露审批令牌）。"""
+    """Ghost Guard / GUI RAG / System1 配置回显（供 /health；绝不泄露审批令牌）。"""
     return {
         "guard": {
             "enabled": config.GUARD_ENABLED,
@@ -2142,6 +2152,12 @@ def guard_status() -> Dict[str, Any]:
             "min_conf": config.RAG_MIN_CONF,
             "image_mode": config.RAG_IMAGE_MODE,
             "cache_seconds": config.RAG_CACHE_SECONDS,
+        },
+        "system1": {
+            "auto_dismiss": config.SYSTEM1_AUTO_DISMISS,
+            "trigger_tokens": len(safety_gate.SYSTEM1_TRIGGER_TOKENS),
+            "dismiss_buttons": len(safety_gate.SYSTEM1_DISMISS_BUTTONS),
+            "version": "v0.15",
         },
     }
 
@@ -2231,3 +2247,283 @@ def analyze(monitor: int = 1, window: Optional[str] = None,
             timings["fallback_from"] = fallback_from
         result["timings"] = timings
     return result
+
+
+# ---- v0.15 System 1 微型反射脑（快思考） ----------------------------------
+#
+# 与慢系统（VL analyze → 主仓视觉 → degraded 挂起）互补：任务在挂起边界
+# （require_vision / 遮挡类失败）先本地"看一眼"——OCR 规则命中「弹窗特征词
+# + 关闭按钮 同窗共现」则走 controller 安全管道本地点击关闭并复检；任何一步
+# 不满足就放弃并回退旧行为（挂起等主仓）。判定规则在 safety_gate.system1_match
+# （纯函数）；本层只负责编排与安全收口，绝不绕过任何门禁：
+# - UAC 提权窗 / 窗口黑名单：命中即整体放弃（零输入）；
+# - 窗口特征：可见顶层窗、面积 ≤45% 屏（对话框体量），控制台宿主类排除；
+# - 点击走 controller.run_action：能力令牌只授予"被识别弹窗自身进程"
+#   （授权来源 = GHOST_SYSTEM1_AUTO_DISMISS 开关 + 窗口自身验证通过），
+#   Ghost Guard / Fail-Safe / 熔断 / 前后截图审计一道不少；
+# - 点击后必须复检（窗口消失 或 规则不再命中）才算 dismissed，否则如实报
+#   still_present，调用方回退挂起——宁可挂起，绝不谎报消解。
+SYSTEM1_MAX_CANDIDATES = 3       # 候选窗上限（控单次反射延迟）
+SYSTEM1_MAX_ATTEMPTS = 2         # 单窗最多尝试的关闭按钮数（控风险）
+SYSTEM1_VERIFY_WAIT = 0.35       # 点击后等待复检的秒数
+
+
+def _system1_candidates(limit: int = SYSTEM1_MAX_CANDIDATES) -> List[int]:
+    """弹窗候选窗：前台窗优先 + 顶层置顶且**标题含触发词**的窗（零 OCR 预筛）。
+
+    标题预筛用 system1_title_hit（win32 直读标题，零 OCR 成本）——既控单次
+    反射延迟，也控误伤面：绝不为"标题无关"的窗口付出 OCR，更不乱点用户的
+    真实窗口（反射只扫：前台 + 置顶+标题命中 的对话框体量窗）。
+    """
+    out: List[int] = []
+    seen: set = set()
+
+    def _add(h: Any) -> None:
+        try:
+            v = int(h)
+        except (TypeError, ValueError):
+            return
+        if v and v not in seen and len(out) < limit:
+            seen.add(v)
+            out.append(v)
+
+    _add(window_locator.foreground_hwnd())
+
+    def _cb(hwnd: int, _acc: Any) -> bool:
+        if len(out) >= limit:
+            return False
+        try:
+            if not win32gui.IsWindowVisible(hwnd) or win32gui.IsIconic(hwnd):
+                return True
+            ex = win32gui.GetWindowLong(hwnd, win32con.GWL_EXSTYLE)
+            if not (ex & win32con.WS_EX_TOPMOST):
+                return True
+            if ex & win32con.WS_EX_TOOLWINDOW:
+                return True
+            title = win32gui.GetWindowText(hwnd)
+            if not title or not safety_gate.system1_title_hit(title):
+                return True  # 标题无触发词的置顶窗不进候选（零 OCR、零误伤）
+            _add(hwnd)
+        except Exception:  # noqa: BLE001 窗口枚举竞态
+            pass
+        return True
+
+    try:
+        win32gui.EnumWindows(_cb, None)
+    except Exception:  # noqa: BLE001
+        pass
+    return out[:limit]
+
+
+def _system1_window_geometry(hwnd: int) -> Optional[Tuple[Tuple[int, ...], Dict[str, Any]]]:
+    """窗口特征预筛：可见未最小化 + 对话框体量（≤45% 屏）。返回 (rect, monitor) 或 None。"""
+    from . import screen_mss  # 延迟：DPI 顺序红线
+    try:
+        if not win32gui.IsWindow(hwnd) or win32gui.IsIconic(hwnd):
+            return None
+        rect = win32gui.GetWindowRect(hwnd)
+    except Exception:  # noqa: BLE001
+        return None
+    w, h = int(rect[2]) - int(rect[0]), int(rect[3]) - int(rect[1])
+    if w <= 4 or h <= 4:
+        return None
+    cx, cy = int(rect[0]) + w // 2, int(rect[1]) + h // 2
+    mon = screen_mss.monitor_at(cx, cy)
+    if not mon:
+        return None
+    if w * h > safety_gate.SYSTEM1_MAX_WINDOW_AREA_RATIO * mon["width"] * mon["height"]:
+        return None  # 非对话框体量（最大化窗/主窗口里乱点的风险面）
+    return rect, mon
+
+
+def _system1_verify(hwnd: int, monitor: int) -> bool:
+    """点击后复检：窗口消失/隐藏 → True；仍可见则再 OCR，规则不再命中 → True。
+
+    复检失败（窗口在但弹窗规则仍命中 / OCR 故障无法证实）一律 False——
+    宁可让调用方回退挂起，绝不把"点了按钮"说成"弹窗已关"。
+    """
+    try:
+        if not win32gui.IsWindow(hwnd) or not win32gui.IsWindowVisible(hwnd):
+            return True
+        title = win32gui.GetWindowText(hwnd) or ""
+        elements = _analyze_ocr(monitor, hwnd)
+    except Exception:  # noqa: BLE001 窗口刚销毁/OCR 故障 → 无法证实
+        return False
+    return not safety_gate.system1_match(elements, title=title)["matched"]
+
+
+def system1_reflex(hwnd: Optional[int] = None, reason: str = "") -> Dict[str, Any]:
+    """System 1 微型反射脑：本地识别弹窗并点击关闭（v0.15 快思考）。
+
+    调用点（task_runner）：require_vision 挂起前 / 遮挡类失败降级前。
+    命中（dismissed=True）→ 调用方继续任务（不返回 degraded）；
+    未命中/被拒/复检未过 → dismissed=False，调用方回退 v0.14 旧行为。
+    任何异常由调用方兜底捕获——反射绝不允许打断任务主流程。
+
+    返回 {"ok","enabled","dismissed","reason","trigger","button","window",
+          "attempts","source","elapsed_ms"}；reason 关键取值：
+    disabled | no_candidate | refused_uac | refused_high_risk |
+    ocr_unavailable | click_refused:<err> | dismissed_window_closed |
+    dismissed_content_cleared | still_present | no_trigger | no_button | ...
+    """
+    t0 = time.perf_counter()
+    out: Dict[str, Any] = {
+        "ok": True, "enabled": bool(config.SYSTEM1_AUTO_DISMISS),
+        "dismissed": False, "reason": "", "trigger": None, "button": None,
+        "window": None, "attempts": 0, "source": reason, "elapsed_ms": 0,
+    }
+
+    def _done(code: str) -> Dict[str, Any]:
+        out["reason"] = code
+        out["elapsed_ms"] = int((time.perf_counter() - t0) * 1000)
+        return out
+
+    if not config.SYSTEM1_AUTO_DISMISS:
+        return _done("disabled")
+
+    from . import audit_sink, screen_mss  # 延迟：audit 无环；screen_mss 有 DPI 顺序红线
+    from .controller import ActionError, run_action  # 延迟：controller 依赖本模块（环）
+
+    candidates = [int(hwnd)] if hwnd else _system1_candidates()
+    if not candidates:
+        return _done("no_candidate")
+    last = "no_match"
+    for cand in candidates:
+        info = safety_gate.window_info(cand)
+        if info is None:
+            last = "window_gone"
+            continue
+        # ---- 安全先验（先于一切 OCR/点击）：UAC 与黑名单零容忍 ----
+        uac = safety_gate.uac_fatal_reason(info)
+        if uac:
+            audit_sink.write("system1_refused", reason="uac_fatal", detail=uac,
+                             hwnd=cand, process=info.get("process"),
+                             title=info.get("title"), source=reason)
+            LOG.warning("SYSTEM1_REFLEX refused reason=uac hwnd=%s title=%r",
+                        cand, info.get("title"))
+            return _done("refused_uac")  # UAC 在场 → 整体放弃，绝不再碰任何窗
+        red = safety_gate.redline_window(info)
+        if red:
+            audit_sink.write("system1_refused", reason="high_risk_window",
+                             detail=red, hwnd=cand, process=info.get("process"),
+                             title=info.get("title"), source=reason)
+            LOG.warning("SYSTEM1_REFLEX refused reason=high_risk hwnd=%s title=%r",
+                        cand, info.get("title"))
+            return _done("refused_high_risk")
+        # ---- 窗口特征：控制台宿主类 / 非对话框体量 → 跳过 ----
+        try:
+            cls = win32gui.GetClassName(cand)
+        except Exception:  # noqa: BLE001
+            cls = ""
+        if cls in safety_gate.SYSTEM1_EXCLUDED_WINDOW_CLASSES:
+            last = "excluded_class"
+            continue
+        geo = _system1_window_geometry(cand)
+        if geo is None:
+            last = "not_dialog_like"
+            continue
+        rect, mon = geo
+        monitor_i = int(mon["index"])
+        # ---- OCR + 规则判定（唯一重的一步） ----
+        try:
+            elements = _analyze_ocr(monitor_i, cand)
+        except VLBackendUnavailable as exc:
+            return _done("ocr_unavailable:" + str(exc)[:80])
+        except VLError:
+            last = "ocr_failed"
+            continue
+        match = safety_gate.system1_match(elements, title=str(info.get("title") or ""))
+        if not match.get("matched"):
+            last = str(match.get("reason") or "no_match")
+            continue
+        out["trigger"] = (match.get("trigger") or {}).get("token")
+        out["window"] = {"hwnd": int(cand), "process": info.get("process"),
+                         "title": info.get("title")}
+        out["monitor"] = monitor_i
+        # ---- 点击关闭（能力令牌只授予该弹窗自身进程；完整安全管道） ----
+        process = str(info.get("process") or "")
+        if not process:
+            last = "unknown_process"
+            continue
+        caps = {"allowed_windows": [process]}
+        dismissed_code = None
+        res: Dict[str, Any] = {}
+        bx = by = 0
+        bmon: Optional[Dict[str, Any]] = None
+        # 逐个按钮尝试：每轮点击前重新 OCR 拿最新布局（防按钮位移后点空）
+        for _round in range(SYSTEM1_MAX_ATTEMPTS):
+            buttons = list(match.get("buttons") or [])
+            if not buttons:
+                break
+            btn = buttons[0]
+            out["attempts"] = _round + 1
+            out["button"] = str(btn.get("text") or "")
+            out["button_bbox"] = list(btn.get("bbox") or [])
+            bx, by = int(btn["center"][0]), int(btn["center"][1])
+            bmon = screen_mss.monitor_at(bx, by) or mon
+            try:
+                if not win32gui.IsWindow(cand):  # 窗口在扫描后已消解
+                    dismissed_code = "dismissed_window_gone"
+                    break
+            except Exception:  # noqa: BLE001
+                dismissed_code = "dismissed_window_gone"
+                break
+            try:
+                res = run_action({
+                    "action": "click", "x": bx, "y": by,
+                    "monitor": int(bmon["index"]), "hwnd": int(cand),
+                    "capabilities": caps, "settle_seconds": 0.1,
+                })
+            except ActionError as exc:
+                # 点击被安全管道拒绝（Guard/覆盖/Fail-Safe…）→ 如实上报，绝不绕过
+                try:
+                    if not win32gui.IsWindow(cand):
+                        dismissed_code = "dismissed_window_gone"
+                        break
+                except Exception:  # noqa: BLE001
+                    dismissed_code = "dismissed_window_gone"
+                    break
+                audit_sink.write("system1_refused",
+                                 reason="click_" + str(getattr(exc, "error", "")),
+                                 detail=str(exc)[:300], hwnd=int(cand),
+                                 process=process, button=out["button"], x=bx, y=by,
+                                 source=reason)
+                LOG.warning("SYSTEM1_REFLEX click_refused error=%s hwnd=%s button=%r "
+                            "detail=%s", getattr(exc, "error", "?"), cand,
+                            out["button"], str(exc)[:160])
+                return _done("click_refused:" + str(getattr(exc, "error", "")))
+            time.sleep(SYSTEM1_VERIFY_WAIT)
+            if _system1_verify(cand, monitor_i):
+                dismissed_code = "dismissed_window_closed"
+                break
+            # 未消解 → 重新 OCR 拿最新布局，轮下一个按钮
+            try:
+                elements = _analyze_ocr(monitor_i, cand)
+                match = safety_gate.system1_match(
+                    elements, title=win32gui.GetWindowText(cand) or "")
+            except Exception:  # noqa: BLE001
+                break
+            if not match.get("matched"):
+                dismissed_code = "dismissed_content_cleared"
+                break
+        if dismissed_code:
+            out["dismissed"] = True
+            audit_sink.write(
+                "system1_dismiss",
+                trigger=out["trigger"], button=out["button"],
+                button_bbox=out.get("button_bbox"), x=bx, y=by,
+                monitor=int((bmon or mon)["index"]), hwnd=int(cand),
+                process=process, title=info.get("title"),
+                attempts=out["attempts"], verification=dismissed_code,
+                source=reason,
+                before_screenshot_path=(res or {}).get("before_screenshot_path"),
+                after_screenshot_path=(res or {}).get("after_screenshot_path"))
+            LOG.info("SYSTEM1_REFLEX dismissed trigger=%s button=%r hwnd=%s "
+                     "process=%s at=(%d,%d) monitor=%d attempts=%d verify=%s "
+                     "source=%s", out["trigger"], out["button"], cand, process,
+                     bx, by, int((bmon or mon)["index"]), out["attempts"],
+                     dismissed_code, reason)
+            return _done(dismissed_code)
+        last = "still_present"
+        break  # 该窗点过了仍未消解 → 不再换窗乱点，如实回退
+    return _done(last)
