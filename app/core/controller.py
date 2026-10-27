@@ -10,6 +10,10 @@ v0.7 三道门禁（safety_gate，全部在此咽喉强制）：
    文本 → 403 HIGH_RISK_INPUT（纯字符串、最早校验）。
 3. 能力令牌：capabilities.allowed_windows 缺失或目标进程不在名单 →
    403 CAPABILITY_DENIED（move 无 hwnd 不与窗口交互，豁免令牌）。
+
+v0.12 第四道门禁（Ghost Guard）：点击前对落点控件做局部 OCR，命中
+转账/删除/格式化/退出登录等高危词 → 409 PENDING_APPROVAL（零输入）；
+配置 GHOST_APPROVAL_TOKEN 后，payload 携带匹配的 approval_token 才放行。
 """
 from __future__ import annotations
 
@@ -21,7 +25,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from . import backend, safety_gate, screen_mss
 from . import action_log, audit_sink, authz, breaker, janitor
-from . import config
+from . import config, vl_driver
 from .backend import FailSafeException
 
 LOG = logging.getLogger("moray-ghost.controller")
@@ -96,6 +100,23 @@ class FatalUACError(ActionError):
     """
     status = 403
     error = "FATAL_UAC_ELEVATION"
+
+
+class PendingApprovalError(ActionError):
+    """v0.12 Ghost Guard：点击目标 OCR 文本命中高危词，等待人类审批。
+
+    这不是失败重试语义（409），动作**完全未执行**：在 moveTo 之前就返回，
+    鼠标不会移动到危险按钮上。配置 GHOST_APPROVAL_TOKEN 且 payload 带匹配
+    approval_token 时才放行；agent 环境不应持有该令牌。
+    """
+    status = 409
+    error = "PENDING_APPROVAL"
+
+
+class VisualGuardUnavailableError(ActionError):
+    """v0.12 Ghost Guard：OCR 引擎不可用且 fail-closed（默认）→ 拒绝点击。"""
+    status = 503
+    error = "VISUAL_GUARD_UNAVAILABLE"
 
 
 class RateCircuitBreakError(ActionError):
@@ -191,6 +212,9 @@ def run_action(payload: Dict[str, Any]) -> Dict[str, Any]:
     except Exception:
         action_log.record("native", action, detail, False, 500)
         raise
+    finally:
+        # v0.12：任何动作之后界面都可能变化，元素检索缓存立即失效。
+        vl_driver.invalidate_rag_cache()
     action_log.record("native", action,
                       {"x": result.get("x"), "y": result.get("y"),
                        "monitor": result.get("monitor")},
@@ -219,6 +243,7 @@ def _run_action_impl(payload: Dict[str, Any]) -> Dict[str, Any]:
     quality = min(max(int(payload.get("quality") or 70), 10), 95)
     scale = min(max(float(payload.get("scale") or 0.5), 0.1), 1.0)
     include_before_b64 = bool(payload.get("include_before_b64"))
+    approval_token = str(payload.get("approval_token") or "").strip() or None
     source_width = payload.get("source_width")
     source_height = payload.get("source_height")
 
@@ -463,7 +488,8 @@ def _run_action_impl(payload: Dict[str, Any]) -> Dict[str, Any]:
                     fmt, quality, scale, include_before_b64,
                     x_req, y_req, coord_source, resolved_physical,
                     want_hwnd, caps, trajectory, trajectory_t,
-                    scroll_dy, scroll_smooth, abort)
+                    scroll_dy, scroll_smooth, abort,
+                    approval_token=approval_token)
             except BaseException as exc:  # noqa: BLE001  在请求线程原样重抛
                 box["e"] = exc
         finally:
@@ -555,6 +581,75 @@ def _gate_target_window(action: str, caps: Optional[Dict[str, Any]],
             after_screenshot_path=after_path)
 
 
+def _visual_guard_click(action: str, before_img, origin: Dict[str, int],
+                        xi: int, yi: int, approval_token: Optional[str],
+                        before_path: Optional[str],
+                        target_hwnd: Optional[int]) -> Dict[str, Any]:
+    """v0.12 Ghost Guard：点击前对落点控件做局部 OCR + 高危词动态检测。
+
+    用 before 截图（零额外抓屏）先由 CV 找包含落点的控件矩形，只 OCR 控件
+    内部文本——绝不把相邻按钮的「删除」读成当前点击目标。命中 → 抛
+    409 PENDING_APPROVAL（此时尚未 moveTo，物理鼠标不动）。fail-closed
+    默认开启：OCR 引擎不可用则 503，绝不在"看不见"时盲点。
+    """
+    if not config.GUARD_ENABLED:
+        return {"enabled": False, "verdict": "off"}
+    ox = int(origin.get("left") or 0)
+    oy = int(origin.get("top") or 0)
+    try:
+        texts, meta = vl_driver.ocr_control_at(before_img, [ox, oy], xi, yi)
+    except Exception as exc:  # noqa: BLE001
+        detail = type(exc).__name__ + ": " + str(exc)
+        audit_sink.write("guard_unavailable", action=action, x=xi, y=yi,
+                         hwnd=target_hwnd, error=detail[:300],
+                         fail_closed=config.GUARD_FAIL_CLOSED,
+                         before_screenshot_path=before_path)
+        if config.GUARD_FAIL_CLOSED:
+            raise VisualGuardUnavailableError(
+                "Ghost Guard cannot OCR the click target (" + detail
+                + "); click refused (fail-closed, set "
+                "GHOST_GUARD_FAIL_CLOSED=false to opt out)",
+                action=action, x=xi, y=yi, guard_backend="unavailable",
+                before_screenshot_path=before_path) from exc
+        meta = {"source": "unavailable", "texts": [], "error": detail[:300]}
+        meta.update({"enabled": True, "verdict": "unavailable"})
+        return meta
+    verdict = safety_gate.dynamic_guard(texts)
+    meta.update({"enabled": True,
+                 "verdict": verdict["verdict"],
+                 "categories": verdict["categories"],
+                 "hits": verdict["hits"]})
+    if not verdict["requires_approval"]:
+        return meta
+    if safety_gate.approval_matches(approval_token):
+        audit_sink.write("guard_approved", action=action, x=xi, y=yi,
+                         hwnd=target_hwnd, hits=verdict["hits"],
+                         ocr_box=meta.get("box_screen"),
+                         before_screenshot_path=before_path)
+        meta["verdict"] = "approved"
+        meta["approved"] = True
+        return meta
+    audit_sink.write("guard_pending", action=action, x=xi, y=yi,
+                     hwnd=target_hwnd, hits=verdict["hits"],
+                     categories=verdict["categories"],
+                     ocr_box=meta.get("box_screen"),
+                     texts=meta.get("texts"),
+                     approval_token_configured=
+                     safety_gate.approval_configured(),
+                     before_screenshot_path=before_path)
+    raise PendingApprovalError(
+        "Ghost Guard: click target reads "
+        + repr([h.get("text") for h in verdict["hits"]][:3])
+        + " (" + ", ".join(verdict["categories"])
+        + "); human approval required - action NOT executed",
+        action=action, x=xi, y=yi,
+        hits=verdict["hits"], categories=verdict["categories"],
+        requires_approval=True,
+        approval_token_configured=safety_gate.approval_configured(),
+        visual_guard=meta,
+        before_screenshot_path=before_path)
+
+
 def _run_locked_action(action: str, xi: Optional[int], yi: Optional[int],
                        text: Optional[str], keys: Optional[List[str]], monitor: int,
                        settle: float, fmt: str, quality: int, scale: float,
@@ -567,7 +662,9 @@ def _run_locked_action(action: str, xi: Optional[int], yi: Optional[int],
                        trajectory_t: Optional[List[int]] = None,
                        scroll_dy: Optional[int] = None,
                        scroll_smooth: bool = False,
-                       abort: Optional[threading.Event] = None) -> Dict[str, Any]:
+                       abort: Optional[threading.Event] = None,
+                       approval_token: Optional[str] = None
+                       ) -> Dict[str, Any]:
     t0 = time.perf_counter()
     # v0.7.2 硬超时中止点：请求线程已放弃本动作——此刻尚未产生任何输入，直接退出
     if abort is not None and abort.is_set():
@@ -576,6 +673,7 @@ def _run_locked_action(action: str, xi: Optional[int], yi: Optional[int],
             phase="aborted", released=True, frozen=True)
     before_path: Optional[str] = None
     after_path: Optional[str] = None
+    visual_guard: Optional[Dict[str, Any]] = None
     origin: Dict[str, int] = {"left": 0, "top": 0}
     cursor_before: List[int] = []
     cursor_after: List[int] = []
@@ -617,6 +715,13 @@ def _run_locked_action(action: str, xi: Optional[int], yi: Optional[int],
         target_hwnd = _resolve_input_target(action, want_hwnd, xi, yi)
         _gate_target_window(action, caps, target_hwnd, monitor, fmt, quality,
                             "", before_path)
+        # v0.12 Ghost Guard：点击类动作在物理移动之前做局部 OCR 动态门禁。
+        # 用 before 截图（无额外抓屏）；CV 定位落点控件边界后只 OCR 控件内部。
+        if action in ("click", "double_click", "right_click") \
+                and xi is not None and yi is not None:
+            visual_guard = _visual_guard_click(
+                action, before_img, origin, xi, yi, approval_token,
+                before_path, target_hwnd)
         if action == "drag" and trajectory is not None and not want_hwnd:
             # 无 hwnd 拖拽：终点根窗口若与起点不同（跨窗口拖拽），两端都必须
             # 过黑名单 + 白名单；带 hwnd 的拖拽已有起点+终点归属门禁兜底。
@@ -815,6 +920,8 @@ def _run_locked_action(action: str, xi: Optional[int], yi: Optional[int],
         body["scroll"] = {"dy": scroll_dy, "smooth": scroll_smooth}
     if include_before_b64 and before_img is not None:
         body["before_image_b64"] = screen_mss.b64_of(before_img, fmt, quality, scale)
+    if visual_guard is not None:
+        body["visual_guard"] = visual_guard
     return body
 
 

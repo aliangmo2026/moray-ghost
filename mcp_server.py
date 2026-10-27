@@ -1,4 +1,4 @@
-"""moray-ghost MCP Server（v0.8.0 · Stdio）：把 Ghost 接进任意 AI Agent。
+"""moray-ghost MCP Server（v0.12 · Stdio）：把 Ghost 接进任意 AI Agent。
 
 启动（由 Agent 侧拉起，stdio JSON-RPC）：
     python mcp_server.py
@@ -105,11 +105,13 @@ mcp = MCPServer(
     name="moray-ghost",
     instructions=(
         "moray-ghost desktop automation gateway. analyze_screen reads native "
-        "window controls; click_element routes web targets to CDP and native "
-        "targets to VL+safe click; type_text types into a window (focus it "
-        "first via click_element); draw_trajectory draws a smooth mouse "
-        "stroke (optionally picking a palette color first); execute_task "
-        "runs a queued task. "
+        "window controls; click_element uses GUI RAG (OCR+CV numbered elements "
+        "-> VLM target_id, no coordinate generation) and routes web targets to "
+        "CDP; dangerous labels return PENDING_APPROVAL and can only be approved "
+        "by a human console (agents never hold the approval token); type_text "
+        "types into a window (focus it first via click_element); "
+        "draw_trajectory draws a smooth mouse stroke (optionally picking a "
+        "palette color first); execute_task runs a queued task. "
         "Identity/capabilities come from the spawn environment "
         "(GHOST_TOKEN / GHOST_AGENT_ID / GHOST_CAPABILITIES) and are enforced "
         "server-side; security denials are returned as structured "
@@ -138,9 +140,11 @@ def click_element(text: str, window: Optional[str] = None,
                   settle_seconds: float = 0.3) -> Dict[str, Any]:
     """按可见文本点击元素。
 
+    v0.12 优先 GUI RAG：检索编号元素 →（文本精确命中或 VLM target_id）→
+    服务端返回真实 bbox → 安全管道点击。危险标签在 MCP 层直接
+    PENDING_APPROVAL（agent 不持有审批令牌）。
     路由：channel=auto 时，URL 或 Edge/Chrome 窗口 → CDP（by=text 选择器）；
-    原生窗口 → VL 解析文本坐标 → 走安全管道点击（hwnd + 能力白名单）。
-    多命中绝不猜（409 VL_AMBIGUOUS）；未命中 404 VL_ELEMENT_NOT_FOUND。
+    原生窗口 → VL/GUI RAG。多命中绝不猜（409 VL_AMBIGUOUS）；未命中 404。
     """
     ch = channel if channel in ("cdp", "native") \
         else vl_driver.resolve_channel(window)
@@ -150,6 +154,47 @@ def click_element(text: str, window: Optional[str] = None,
         if window and vl_driver._looks_like_url(str(window)):
             payload["tab"] = {"url_contains": str(window)}
         return _post("/browser/action", payload)
+
+    # v0.12 GUI RAG 优先：OCR+CV 检索编号元素 → VLM 只回 target_id → 真实 bbox。
+    # 文本目标通常零模型命中（method=text_exact）；模糊目标由 VLM 选号。
+    # 未命中/后端不可用时回落到既有 analyze/target/hybrid 路径，行为不变。
+    rag = _post("/vl/ground", {"window": window, "backend": backend,
+                               "query": text, "strategy": "auto",
+                               "match": match}, timeout=180)
+    if rag.get("ok"):
+        control = rag.get("element") or {}
+        if rag.get("requires_approval"):
+            # Agent 层无权自批：审批令牌只应存在于人类控制台，绝不从
+            # MCP 启动环境读取/透传。
+            return {"ok": False, "error": "PENDING_APPROVAL",
+                    "detail": "Ghost Guard: target element "
+                              + repr(control.get("text"))
+                              + " requires human approval",
+                    "http_status": 409,
+                    "requires_approval": True,
+                    "target_id": rag.get("target_id"),
+                    "element": control,
+                    "target_guard": rag.get("target_guard"),
+                    "guard": rag.get("guard"),
+                    "backend": rag.get("backend")}
+        center = control.get("center")
+        if not (isinstance(center, (list, tuple)) and len(center) == 2):
+            return {"ok": False, "error": "VL_BAD_ELEMENT",
+                    "detail": "GUI RAG returned an element without a valid "
+                              "center: " + str(control)[:300],
+                    "backend": rag.get("backend")}
+        out = _post("/execute_action", {
+            "action": "click", "x": int(center[0]), "y": int(center[1]),
+            "hwnd": (rag.get("window") or {}).get("hwnd"),
+            "settle_seconds": settle_seconds, **_caps_field()})
+        out["clicked"] = control
+        out["backend"] = rag.get("backend")
+        out["target_id"] = rag.get("target_id")
+        out["method"] = rag.get("method")
+        return out
+    if rag.get("error") not in ("VL_ELEMENT_NOT_FOUND",
+                               "VL_BACKEND_UNAVAILABLE", "VL_AMBIGUOUS"):
+        return rag
 
     an = _post("/vl/analyze", {"window": window, "backend": backend},
                timeout=180)

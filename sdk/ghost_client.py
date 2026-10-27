@@ -81,6 +81,20 @@ class GhostFrozenError(GhostError):
     """Ghost 已被 emergency stop 冻结；POST /api/ghost/emergency_stop/release 解冻。"""
 
 
+class GhostApprovalRequiredError(GhostError):
+    """v0.12 409 PENDING_APPROVAL：动态高危词命中，动作**未执行**。
+
+    ``hits`` 为命中的危险词/类别；审批只能由人工控制台带
+    ``GHOST_APPROVAL_TOKEN`` 重新发起（SDK/Agent 环境不应持有该令牌）。
+    """
+
+    def __init__(self, status: int, error: str, detail: str,
+                 data: Optional[Dict[str, Any]] = None):
+        super().__init__(status, error, detail, data)
+        self.hits = (data or {}).get("hits") or []
+        self.requires_approval = True
+
+
 class SystemNotReadableError(GhostError):
     """锁屏 / UAC 安全桌面 / 抓屏失败：服务端拒绝盲操作。"""
 
@@ -240,6 +254,89 @@ class DrawAPI(_Namespace):
         kw.setdefault("capabilities", self._client.capabilities)
         return self._client.request("POST", "/draw_trajectory",
                                     {**body, **kw}, timeout=120.0)
+
+
+class VisionAPI(_Namespace):
+    """v0.12 GUI RAG / v0.8 VL 感知（只读；不产生任何输入）。
+
+    ``elements`` 返回 OCR+CV+win32 合并后的编号元素表（bbox 全部来自像素/句柄）；
+    ``ground`` 让服务端做检索+VLM 选号，返回 target_id 与真实 bbox——模型不生成
+    坐标。危险元素的 ground 结果会带 ``requires_approval``，但本 SDK 只读，
+    真正点击由 ``action``/``execute_task`` 走安全管道，命中动态高危词会被
+    服务端 409 PENDING_APPROVAL 拦截（审批令牌只应存在于人工控制台）。
+    """
+
+    def elements(self, window: Optional[str] = None,
+                 hwnd: Optional[int] = None, monitor: int = 1,
+                 backend: str = "auto", include_icons: bool = False,
+                 max_elements: int = 200, annotate: bool = False,
+                 timeout: float = 180.0) -> Dict[str, Any]:
+        body: Dict[str, Any] = {
+            "monitor": monitor, "backend": backend,
+            "include_icons": bool(include_icons),
+            "max_elements": int(max_elements), "annotate": bool(annotate)}
+        if window is not None:
+            body["window"] = str(window)
+        if hwnd is not None:
+            body["hwnd"] = int(hwnd)
+        return self._client.request("POST", "/vl/elements", body,
+                                    timeout=timeout)
+
+    def ground(self, query: str, window: Optional[str] = None,
+               hwnd: Optional[int] = None, monitor: int = 1,
+               backend: str = "auto", strategy: str = "auto",
+               match: str = "auto", use_image: Optional[bool] = None,
+               min_conf: Optional[float] = None,
+               max_candidates: int = 16, include_icons: bool = False,
+               annotate: bool = False,
+               timeout: float = 300.0) -> Dict[str, Any]:
+        body: Dict[str, Any] = {
+            "query": str(query), "monitor": monitor, "backend": backend,
+            "strategy": strategy, "match": match,
+            "max_candidates": int(max_candidates),
+            "include_icons": bool(include_icons), "annotate": bool(annotate)}
+        if window is not None:
+            body["window"] = str(window)
+        if hwnd is not None:
+            body["hwnd"] = int(hwnd)
+        if use_image is not None:
+            body["use_image"] = bool(use_image)
+        if min_conf is not None:
+            body["min_conf"] = float(min_conf)
+        return self._client.request("POST", "/vl/ground", body,
+                                    timeout=timeout)
+
+    def analyze(self, window: Optional[str] = None,
+                backend: str = "auto", target: Optional[str] = None,
+                hybrid: bool = False, monitor: int = 1,
+                timeout: float = 180.0) -> Dict[str, Any]:
+        """v0.8 通用控件表 / 定向 grounding（llama 后端会输出坐标）。"""
+        body: Dict[str, Any] = {"monitor": monitor, "backend": backend,
+                                "hybrid": bool(hybrid)}
+        if window is not None:
+            body["window"] = str(window)
+        if target is not None:
+            body["target"] = str(target)
+        return self._client.request("POST", "/vl/analyze", body,
+                                    timeout=timeout)
+
+    def describe(self, question: str, image_b64: Optional[str] = None,
+                 window: Optional[str] = None, hwnd: Optional[int] = None,
+                 monitor: int = 1, backend: str = "auto",
+                 max_tokens: int = 512,
+                 timeout: float = 300.0) -> Dict[str, Any]:
+        """自由问答复述（真实 VLM 读图；image_b64 可直接喂主仓截图）。"""
+        body: Dict[str, Any] = {
+            "question": str(question), "monitor": monitor,
+            "backend": backend, "max_tokens": int(max_tokens)}
+        if image_b64 is not None:
+            body["image_b64"] = str(image_b64)
+        if window is not None:
+            body["window"] = str(window)
+        if hwnd is not None:
+            body["hwnd"] = int(hwnd)
+        return self._client.request("POST", "/vl/describe", body,
+                                    timeout=timeout)
 
 
 class TaskAPI(_Namespace):
@@ -411,6 +508,7 @@ class GhostClient:
         self.environment = EnvironmentAPI(self)
         self.action = ActionAPI(self)
         self.draw = DrawAPI(self)
+        self.vl = VisionAPI(self)
         self.task = TaskAPI(self)
         self.system = SystemAPI(self)
         self.window = WindowAPI(self)
@@ -451,6 +549,9 @@ class GhostClient:
         if resp.status_code == 403 and error in (
                 "HIGH_RISK_WINDOW", "HIGH_RISK_INPUT", "CAPABILITY_DENIED"):
             return GhostRedlineError(resp.status_code, error, detail, data=body)
+        if error == "PENDING_APPROVAL":
+            return GhostApprovalRequiredError(resp.status_code, error, detail,
+                                              data=body)
         if error == "GHOST_FROZEN":
             return GhostFrozenError(resp.status_code, error, detail)
         if error == "SYSTEM_NOT_READABLE":

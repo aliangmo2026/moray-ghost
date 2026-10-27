@@ -1,4 +1,4 @@
-"""CDP 浏览器接管（v0.6 M2）：playwright connect_over_cdp 连本地 Edge/Chrome。
+"""CDP 浏览器接管（v0.6 M2；v0.12 DOM Ghost Guard）：playwright connect_over_cdp 连本地 Edge/Chrome。
 
 铁律：
 - 只连 127.0.0.1/localhost 调试端口（GHOST_BROWSER_CDP_URL），绝不自动拉起浏览器、
@@ -7,6 +7,9 @@
   非线程安全，所有 page 操作必须回到持有线程执行）；连接断开时下个任务自愈重连；
 - 元素定位多候选绝不猜：count==0 → ELEMENT_NOT_FOUND，count>1 未给 nth →
   ELEMENT_AMBIGUOUS（把候选数报回去让主仓消歧）；
+- v0.12：click/dblclick/press 前读取目标 DOM 文本（inner_text/input value/
+  aria-label/title/alt），命中 dynamic_guard 高危词 → 409 PENDING_APPROVAL，
+  人工审批令牌才放行；`op=screenshot` 是只读页面截图（录屏/审计）；
 - 冻结门禁 / input_audit(channel=cdp) / ACTION_LOCK 由路由层统一执行，本模块只做
   CDP 语义的"怎么做、做了没有"。
 """
@@ -20,7 +23,7 @@ from typing import Any, Dict, List, Optional
 from urllib.parse import urlparse
 
 from .config import BROWSER_CDP_URL
-from . import screen_mss
+from . import config, safety_gate, screen_mss
 
 LOG = logging.getLogger("moray-ghost.browser_driver")
 
@@ -185,6 +188,62 @@ class _Driver:
             LOG.warning("browser audit shot failed: %s", exc)
             return None
 
+    @staticmethod
+    def element_text(loc: Any) -> str:
+        """点击目标的可读标签（DOM 文本版 Ghost Guard 输入）。
+
+        依次取 inner_text / input value / aria-label / title / alt——覆盖
+        <button>删除</button>、<input type=button value=删除>、
+        图标按钮 aria-label 三类可点击元素。
+        """
+        getters = (
+            lambda: loc.inner_text(timeout=1200),
+            lambda: loc.input_value(timeout=800),
+            lambda: loc.get_attribute("aria-label", timeout=800),
+            lambda: loc.get_attribute("title", timeout=800),
+            lambda: loc.get_attribute("alt", timeout=800),
+        )
+        for getter in getters:
+            try:
+                value = getter()
+            except Exception:  # noqa: BLE001
+                continue
+            if value and str(value).strip():
+                return str(value).strip()
+        return ""
+
+    def _guard_click(self, loc: Any, body: Dict[str, Any],
+                     out: Dict[str, Any], before_path: Optional[str]) -> None:
+        """v0.12 Ghost Guard（CDP）：点击/双击前检查目标 DOM 文本。"""
+        if not config.GUARD_ENABLED:
+            out["visual_guard"] = {"enabled": False, "verdict": "off"}
+            return
+        text = self.element_text(loc)
+        verdict = safety_gate.dynamic_guard([text])
+        meta = {"enabled": True, "source": "cdp_dom", "text": text,
+                "verdict": verdict["verdict"],
+                "hits": verdict["hits"],
+                "categories": verdict["categories"]}
+        out["visual_guard"] = meta
+        if not verdict["requires_approval"]:
+            return
+        if safety_gate.approval_matches(body.get("approval_token")):
+            meta["verdict"] = "approved"
+            meta["approved"] = True
+            return
+        raise BrowserError(
+            409, "PENDING_APPROVAL",
+            "Ghost Guard: CDP click target reads "
+            + repr([h.get("text") for h in verdict["hits"]][:3])
+            + " (" + ", ".join(verdict["categories"])
+            + "); human approval required - action NOT executed",
+            requires_approval=True, hits=verdict["hits"],
+            categories=verdict["categories"],
+            element_text=text,
+            approval_token_configured=safety_gate.approval_configured(),
+            before_screenshot_path=before_path,
+            visual_guard=meta)
+
     def run_op(self, body: Dict[str, Any]) -> Dict[str, Any]:
         op = str(body.get("op") or "").lower()
         try:
@@ -213,6 +272,9 @@ class _Driver:
         page = self.pick_page(body.get("tab"))
         out: Dict[str, Any] = {"ok": True, "op": op,
                                "tab_url": page.url, "tab_title": page.title()}
+        if op == "screenshot":
+            # v0.12：页面级截图（录屏/演示用；不产生任何输入）
+            return {**out, "image_b64": self.shot_b64(page)}
         if op == "close_tab":
             out["closed_url"] = page.url
             page.close()
@@ -230,8 +292,10 @@ class _Driver:
                                    "height": round(box["height"])}
                                   if box else None)
             if op == "click":
+                self._guard_click(loc, body, out, before_path)
                 loc.click(timeout=5000)
             elif op == "dblclick":
+                self._guard_click(loc, body, out, before_path)
                 loc.dblclick(timeout=5000)
             elif op == "hover":
                 loc.hover(timeout=5000)
@@ -245,6 +309,7 @@ class _Driver:
                                    "press requires text (a key like 'Enter')")
             if body.get("selector"):  # 先聚焦目标元素再按键
                 loc, _count = self._locator(page, body.get("selector"))
+                self._guard_click(loc, body, out, before_path)
                 loc.click(timeout=5000)
             page.keyboard.press(str(body.get("text")))
         elif op == "scroll":
@@ -274,7 +339,8 @@ class _Driver:
         else:
             raise BrowserError(400, "BAD_REQUEST",
                                "unknown op " + repr(op) + " (valid: click/dblclick/"
-                               "hover/fill/press/scroll/drag/tabs/close_tab)")
+                               "hover/fill/press/scroll/drag/tabs/close_tab/"
+                               "screenshot)")
         out["after_screenshot_path"] = self.shot_save(page, "browser_after")
         out["after_image_b64"] = self.shot_b64(page)
         return out

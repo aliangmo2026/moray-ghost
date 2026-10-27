@@ -15,7 +15,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.core import action_log, authz, breaker, browser_driver, task_queue
+from app.core import action_log, audit_sink, authz, breaker, browser_driver, task_queue
 from app.core import config, controller
 
 LOG = logging.getLogger("moray-ghost.browser")
@@ -26,7 +26,7 @@ router = APIRouter(prefix="/api/ghost")
 class BrowserActionBody(BaseModel):
     model_config = ConfigDict(extra="allow")
 
-    op: str = Field(..., pattern="^(click|dblclick|hover|fill|press|scroll|drag|tabs|close_tab)$")
+    op: str = Field(..., pattern="^(click|dblclick|hover|fill|press|scroll|drag|tabs|close_tab|screenshot)$")
     tab: Optional[Dict[str, Any]] = Field(default=None,
                                           description='{"url_contains": "..."} 约束操作的 tab')
     selector: Optional[Dict[str, Any]] = Field(
@@ -37,6 +37,9 @@ class BrowserActionBody(BaseModel):
     dy: Optional[int] = None
     points: Optional[List[List[float]]] = Field(default=None,
                                                  description="drag 轨迹（页面 CSS px）")
+    approval_token: Optional[str] = Field(
+        default=None,
+        description="人类审批令牌（Ghost Guard PENDING_APPROVAL 时使用；agent 不应持有）")
 
 
 def _err(exc: browser_driver.BrowserError) -> JSONResponse:
@@ -105,10 +108,27 @@ def browser_action(body: BrowserActionBody, request: Request) -> Dict[str, Any]:
         out = browser_driver.run_op(body.model_dump())
     except browser_driver.BrowserError as exc:
         action_log.record("cdp", body.op, _detail_of(body), False, exc.status)
+        if exc.error == "PENDING_APPROVAL":
+            audit_sink.write("guard_pending", channel="cdp", op=body.op,
+                             tab=(body.tab or {}).get("url_contains"),
+                             selector=(body.selector or {}).get("value"),
+                             hits=exc.data.get("hits"),
+                             element_text=exc.data.get("element_text"),
+                             approval_token_configured=exc.data.get(
+                                 "approval_token_configured"),
+                             before_screenshot_path=exc.data.get(
+                                 "before_screenshot_path"))
         return _err(exc)
     finally:
         controller.ACTION_LOCK.release()
     out["elapsed_ms"] = out.get("elapsed_ms") or None
+    if (out.get("visual_guard") or {}).get("verdict") == "approved":
+        audit_sink.write("guard_approved", channel="cdp", op=body.op,
+                         tab=(body.tab or {}).get("url_contains"),
+                         selector=(body.selector or {}).get("value"),
+                         hits=(out.get("visual_guard") or {}).get("hits"),
+                         before_screenshot_path=out.get(
+                             "before_screenshot_path"))
     action_log.record("cdp", body.op,
                       {"tab": out.get("tab_url"),
                        "selector": (body.selector or {}).get("value"),

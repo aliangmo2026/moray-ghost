@@ -55,6 +55,7 @@ async def health() -> Dict[str, Any]:
         "db_path": str(DB_PATH),
         "frozen": task_queue.is_frozen(),
         "frozen_reason": task_queue.frozen_reason(),
+        **vl_driver.guard_status(),
     }
 
 

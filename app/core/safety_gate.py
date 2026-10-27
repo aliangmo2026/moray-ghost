@@ -1,8 +1,9 @@
-"""军工级安全红线（v0.7 绝对防御）：窗口黑名单 / 键盘黑名单 / 能力令牌（最小权限）。
+"""军工级安全红线（v0.12 绝对防御）：窗口黑名单 / 键盘黑名单 / 能力令牌 +
+动态视觉门禁（Ghost Guard）。
 
-三道门禁在 controller 宏重放、任务步骤、直接 /execute_action 的唯一咽喉上强制，
-无一例外。本模块只做判定与解析（纯函数 + win32 只读查询），不产生任何输入；
-HTTP 语义错误由 controller 的 ActionError 子类承载。
+前三道门禁在 controller 宏重放、任务步骤、直接 /execute_action 的唯一咽喉上
+强制，无一例外。本模块只做判定与解析（纯函数 + win32 只读查询），不产生任何
+输入；HTTP 语义错误由 controller 的 ActionError 子类承载。
 
 1. 窗口黑名单：目标窗口进程 ∈ HIGH_RISK_PROCESSES，或标题含高危字样 → 拒绝
    任何点击与输入（controller 侧 403 HIGH_RISK_WINDOW）。
@@ -10,6 +11,10 @@ HTTP 语义错误由 controller 的 ActionError 子类承载。
    破坏性文本（format / shutdown / 格式化 / rm -rf …）→ 403 HIGH_RISK_INPUT。
 3. 能力令牌：执行任何会打进窗口的输入前，目标窗口进程必须 ∈
    capabilities.allowed_windows；未携带令牌或进程不在名单 → 403 CAPABILITY_DENIED。
+4. 动态视觉门禁（v0.12）：dynamic_guard() 对 OCR/DOM 文本做高危词检测
+   （转账/删除/格式化/退出登录…）；controller 点击前只 OCR 落点控件内部，
+   命中 → 409 PENDING_APPROVAL（零输入），配置 GHOST_APPROVAL_TOKEN 后
+   人工审批令牌才放行。规则与边界见 docs/v0.12-design.md。
 
 实证（本机 Win11 探针，2026-10）：cmd.exe 的可见控制台窗口宿主是
 WindowsTerminal.exe（class CASCADIA_HOSTING_WINDOW_CLASS；ConsoleWindowClass
@@ -25,12 +30,15 @@ WindowsTerminal.exe（class CASCADIA_HOSTING_WINDOW_CLASS；ConsoleWindowClass
 """
 from __future__ import annotations
 
+import hmac
 import re
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Iterable, List, Optional
 
 import psutil
 import win32gui
 import win32process
+
+from . import config
 
 # ---- 1) 窗口黑名单 -------------------------------------------------------
 
@@ -191,3 +199,102 @@ def capability_allows(capabilities: Optional[Dict[str, Any]],
 def has_input_steps(steps: List[Dict[str, Any]]) -> bool:
     """任务是否包含会打进窗口的输入步骤（action/macro）——有则令牌必须非空。"""
     return any(s.get("kind") in ("action", "macro") for s in steps)
+
+
+# ---- 4) 动态视觉门禁（v0.12.0 Ghost Guard） -------------------------------
+#
+# 与 1)/2) 的静态黑名单互补：窗口标题/键入文本之外，屏幕上 OCR 读到的控件
+# 标签同样可能代表不可逆操作（转账/删除/格式化/退出登录…）。本层只做纯
+# 文本判定（不产生输入、不依赖窗口句柄），由：
+#   - vl_driver.extract_ui_elements() 标注元素级 dangerous；
+#   - controller 点击前对落点附近 OCR 文本做实时复核并 409 PENDING_APPROVAL。
+# 中文按去空白后的子串匹配（OCR 常把「删除」读成「删 除」）；英文按词边界，
+# 避免 "display" 误伤 "pay"、"information" 误伤 "format"。
+#
+# 刻意不把裸英文 "format" 列入：Paint/Word 的功能区「Format / 格式」是正常
+# 排版操作，误杀会阻断重型实战；中文「格式化」与 "format c:" 仍拦截。
+GUARD_RULES: tuple = (
+    ("payment", ("转账", "付款", "支付", "汇款", "打款", "收款",
+                 "transfer", "send money", "pay now", "pay", "payment")),
+    ("deletion", ("删除", "移除", "格式化", "清空", "抹除", "销毁", "卸载",
+                  "重置", "恢复出厂", "delete", "remove", "wipe",
+                  "uninstall", "reset")),
+    ("session", ("退出登录", "注销", "登出", "退出账号",
+                 "logout", "log out", "sign out", "signout")),
+    ("system", ("shutdown", "poweroff", "diskpart", "reg delete",
+                "rm -rf", "format c")),
+)
+
+# 安全复合词：先剔除再匹配，避免「删除线」（排版功能）被「删除」误伤。
+GUARD_SAFE_COMPOUNDS = ("删除线",)
+
+_GUARD_VERSION = "v0.12"
+
+
+def _compact(text: str) -> str:
+    return "".join(str(text or "").split()).lower()
+
+
+def _english_token_hit(token: str, lowered: str) -> bool:
+    parts = [re.escape(p) for p in re.split(r"\s+", token.strip()) if p]
+    if not parts:
+        return False
+    return re.search(r"\b" + r"\s+".join(parts) + r"\b", lowered) is not None
+
+
+def dynamic_guard(texts: Iterable[Any]) -> Dict[str, Any]:
+    """OCR 文本 → 动态门禁判定。
+
+    texts 可以是字符串或含 text 字段的 dict（元素表直接传入）。
+    返回 {"verdict": "allow"|"pending_approval", "requires_approval",
+          "hits": [{"token","category","text"}], "categories": [...]}
+    """
+    if isinstance(texts, str):
+        items: List[Any] = [texts]
+    else:
+        items = list(texts or [])
+    hits: List[Dict[str, Any]] = []
+    seen: set = set()
+    for raw in items:
+        text = raw.get("text") if isinstance(raw, dict) else raw
+        text = str(text or "").strip()
+        if not text:
+            continue
+        compact = _compact(text)
+        for safe in GUARD_SAFE_COMPOUNDS:
+            compact = compact.replace(safe, "")
+        lowered = " ".join(str(text).lower().split())
+        for category, tokens in GUARD_RULES:
+            for token in tokens:
+                if any("\u4e00" <= ch <= "\u9fff" for ch in token):
+                    matched = _compact(token) in compact
+                else:
+                    matched = _english_token_hit(token, lowered)
+                if not matched:
+                    continue
+                key = (category, token, text)
+                if key in seen:
+                    continue
+                seen.add(key)
+                hits.append({"token": token, "category": category,
+                             "text": text, "version": _GUARD_VERSION})
+    categories = sorted({h["category"] for h in hits})
+    return {
+        "verdict": "pending_approval" if hits else "allow",
+        "requires_approval": bool(hits),
+        "hits": hits,
+        "categories": categories,
+        "version": _GUARD_VERSION,
+    }
+
+
+def approval_configured() -> bool:
+    """是否配置了人类审批令牌（只回布尔，绝不泄露令牌内容）。"""
+    return bool(config.APPROVAL_TOKEN)
+
+
+def approval_matches(token: Any) -> bool:
+    """常量时间比较审批令牌；未配置/空值一律 False（永久 PENDING）。"""
+    if not config.APPROVAL_TOKEN:
+        return False
+    return hmac.compare_digest(str(token or ""), config.APPROVAL_TOKEN)

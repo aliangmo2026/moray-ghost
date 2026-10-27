@@ -1,14 +1,25 @@
 # moray-ghost
 
-![version](https://img.shields.io/badge/version-0.9.1-blue)
+![version](https://img.shields.io/badge/version-0.12.0-blue)
 ![python](https://img.shields.io/badge/python-3.12.2-3776AB?logo=python&logoColor=white)
 ![platform](https://img.shields.io/badge/platform-Windows%2010%20%2F%2011-0078D6)
-![regression](https://img.shields.io/badge/regression-390%2B%20checks%20passed-brightgreen)
+![regression](https://img.shields.io/badge/regression-460%2B%20checks%20passed-brightgreen)
 ![audit](https://img.shields.io/badge/audit-JSONL%20%2B%20token%20fingerprint-lightgrey)
 
-Windows 桌面自动化本地服务（v0.9.1）：**mss 极速截图 + 授权式 pyautogui 动作 + 宏录制/安全重放 + 任务生命周期 + 环境感知 + 视觉反哺 Heal + 多 Agent 任务队列 + Web 监控面板 + 官方 Python SDK + MCP Server（Stdio，任意 AI Agent 即插即用）+ 本地 VL 感知（rapidocr / llama-cpp CUDA GGUF，2B/7B 档位 + CV+VL 混合图标定位）+ 纯鼠标平滑绘制 draw_trajectory + v0.7 绝对防御 + v0.7.1 企业级安全 + v0.7.2 极限安全**。
+Windows 桌面自动化本地服务（v0.12.0）：**mss 极速截图 + 授权式 pyautogui 动作 + 宏录制/安全重放 + 任务生命周期 + 环境感知 + 视觉反哺 Heal + 多 Agent 任务队列 + Web 监控面板 + 官方 Python SDK + MCP Server（Stdio，任意 AI Agent 即插即用）+ 本地 VL 感知（rapidocr / llama-cpp CUDA GGUF，2B/7B 档位 + CV+VL 混合图标定位）+ GUI RAG（OCR+CV 编号元素表 → VLM 只回 target_id）+ Ghost Guard（点击前动态高危词门禁 → PENDING_APPROVAL / 人工审批令牌）+ 纯鼠标平滑绘制 draw_trajectory + v0.7 绝对防御 + v0.7.1 企业级安全 + v0.7.2 极限安全**。
 
 只监听 `127.0.0.1:8030`；绝不触碰 `D:\MoRay`（主仓）。
+
+## 🎬 v0.12 实战实拍（GUI RAG + Ghost Guard，自建本地靶窗，绝不连接真实账户/微信）
+
+| 原生 Tk 表单：RAG 选号填表 → 保存 → Guard 拦截删除 → 人工审批 | 本地浏览器表单：CDP 填表 → Guard 拦截删除/退出 → 人工审批 |
+|---|---|
+| ![GUI RAG 原生表单](docs/assets/gui_rag_form_guard.gif) | ![GUI RAG 浏览器表单](docs/assets/browser_form_guard.gif) |
+
+零坐标幻觉：控件 bbox 全部来自像素/句柄，VLM 只做选择题（回 `target_id`）；
+10 控件召回 10/10、IoU 最小 0.965、中心误差 ≤0.5px。点击前 Ghost Guard
+对落点控件做 OCR/DOM 高危词门禁，命中 → **409 PENDING_APPROVAL 零输入**，
+人工审批令牌才放行（agent 不能自批）。
 
 > **⚠️ v0.4.1 起全部接口统一挂载在 `/api/ghost/` 前缀下**（如 `/api/ghost/health`、
 > `/api/ghost/execute_action`），主仓可在同一端口挂载自己的服务而互不冲突。
@@ -68,14 +79,14 @@ Windows 桌面自动化本地服务（v0.9.1）：**mss 极速截图 + 授权式
 > 真实出处；匹配铁律 0 命中 404、多命中 409 绝不猜；服务端收口
 > `POST /api/ghost/vl/analyze`（需 token，走单一 capture 线程与进程内单例模型）。
 > ② **MCP Server**（根目录 `mcp_server.py`，官方 `mcp` SDK Stdio）——4 个标准
-> Tools：`analyze_screen` / `click_element` / `type_text` / `execute_task`；
+> Tools（v0.9.1 起 5 个，新增 `draw_trajectory`）：`analyze_screen` / `click_element` / `type_text` / `execute_task`；
 > **路由分流**：URL 或 Edge/Chrome 窗口 → CDP（by=text），原生 → VL 定位中心
 > → 安全管道点击；身份与白名单启动时从环境注入（`GHOST_TOKEN` /
 > `GHOST_AGENT_ID` / `GHOST_CAPABILITIES`），**tool 参数改不宽白名单**，
 > 一切经 HTTP+Token 回服务端——令牌/能力令牌/黑名单/熔断/硬超时/审计 100% 生效。
 > ③ **打字注入升级**：本机中文 IME 会把 `pyautogui.write` 的字母打成
 > VK_PROCESSKEY（实证），ASCII 逐键注入切换为 `keyboard.write`（规范 VK+扫描码，
-> 失败回落 pyautogui）。验收：`scripts/test_v08_mcp_vl.py` **20/20**。
+> 失败回落 pyautogui）。验收：`scripts/test_v08_mcp_vl.py` **21/21**。
 > **真模型挂载**：GGUF 放 `models/`（已 gitignore）→ `.env` 设
 > `GHOST_VL_MODEL_PATH` + `GHOST_VL_MMPROJ_PATH` → `auto` 自动切 llama；
 > 下载链接（hf-mirror 实测存在）、Cursor/Claude Desktop 配置与排障见
@@ -121,6 +132,46 @@ Windows 桌面自动化本地服务（v0.9.1）：**mss 极速截图 + 授权式
 > 触发轨迹 / ctypes 签名污染毒死 pyautogui / 画图软件合并闭合线。官方封面
 > `docs/assets/whale_cover.html`（轨迹重放动画 + 真实截图，自包含单文件，
 > `scripts/make_whale_cover.py` 再生成）。
+>
+> **v0.12.0 GUI RAG + Ghost Guard（让 VLM 做选择题，不做坐标题）**：
+> ① **检索层** `vl_driver.extract_ui_elements()`——客户区截图经
+> **OCR 文本 + OpenCV 矩形 + win32 原生几何**三方合并，产出带编号的元素表
+> （id/标签/类型/物理像素 bbox/中心/输入值/危险标记）。bbox 全部来自像素或
+> 句柄，**模型永远不生成坐标**，从根上消除坐标幻觉；Tk 的 Win32 text 恒为空，
+> 由 OCR 补标签、原生 class 补角色（input/button/checkbox），CV 边框把
+> TkChild/按钮 bbox 精修到 ≤1px。检索结果短 TTL 缓存，动作后立即失效。
+> ② **选择层** `vl_driver.ground_target()`——文本精确命中走零模型快路径；
+> 模糊目标把编号目录（必要时附编号截图）交给本地 Qwen2-VL，只要求
+> `{"target_id": N}`。2B GPU 目录选号 ~0.4s/次；10/10 标签全对，
+> 选中 bbox 与检索表逐字节一致。服务端新增
+> `POST /api/ghost/vl/elements`（编号元素表）与 `POST /api/ghost/vl/ground`
+> （query → target_id → 真实 bbox）；MCP `click_element` 默认先走 GUI RAG，
+> 未命中再回落到既有 analyze/target/hybrid 路径，5 个 Tools 白名单不变。
+> ③ **Ghost Guard 动态门禁**——`safety_gate.dynamic_guard()` 对 OCR/DOM 文本
+> 做高危词检测（转账/付款/删除/移除/格式化/退出登录/注销/卸载/重置…）；
+> 原生点击在 `moveTo` **之前**，先用 before 截图的 CV 矩形定位落点控件、
+> 只 OCR 控件内部文本（避免把相邻「删除」读成当前目标），命中 →
+> **409 PENDING_APPROVAL，零输入**；配置 `GHOST_APPROVAL_TOKEN` 后，payload
+> 带匹配 `approval_token` 才放行并审计 `guard_approved`。OCR 不可用时默认
+> fail-closed（503 `VISUAL_GUARD_UNAVAILABLE`）。CDP 浏览器点击同样检查
+> 目标 DOM 文本（`source=cdp_dom`）；**MCP Agent 环境不读取/不透传审批令牌，
+> agent 不能自批**。配置与边界见 `.env.example` / `docs/v0.12-design.md`。
+> ④ **准确率与实战**：`scripts/test_v12_gui_rag.py` **44/44**——10 个真实
+> 控件召回/精确率 **10/10**，bbox IoU 最小 **0.965**、平均 **0.974**，
+> 中心误差最大 **0.5px**；VLM 选号 **10/10**（含「登录 vs 退出登录」消歧、
+> 中文模糊目标「保存」「密码框」）；Guard 拦截/错误令牌/正确审批令牌/审计
+> 全链路通过。`scripts/test_v12_heavy_gui.py` **28/28**——自建 Tk 表单
+> 由 RAG 选号填入 `ghost_agent` / `gui-rag-ok` 并保存（标题回显），删除账户
+> 先 409 后审批 200；自建 headless Edge + 本地 HTML 表单 CDP 填表/提交，
+> 删除记录与退出登录均先 409、审批后生效。原生 3fps 录屏 + 浏览器 CDP
+> 页面帧录制：
+> **[gui_rag_form_guard.gif](docs/assets/gui_rag_form_guard.gif)**（桌面原生）、
+> **[browser_form_guard.gif](docs/assets/browser_form_guard.gif)**（页面级 CDP），
+> 附 MP4 与最终 PNG。**回归**：MCP+VL **21/21**、Paint 像素精度 **11/11**、
+> CDP 浏览器 **14/14**、极限安全 **40/40**、draw_trajectory **31/31**。
+> **踩坑沉淀**：Edge 同步弹窗会盖住系统级录屏 → 浏览器 GIF 改用 CDP
+> 页面截图；`taskkill /T` 杀不到重挂载的 Edge 窗口宿主 → 以临时
+> `--user-data-dir` 指纹精确杀整棵树。
 
 ## ⚠️ 测试纪律红线（所有脚本强制执行，违反即事故）
 
@@ -280,8 +331,11 @@ HTTP 层   FastAPI @ 127.0.0.1:8030，全部接口挂 /api/ghost/ 前缀
 .venv\Scripts\python scripts\test_v072_extreme.py # v0.7.2 极限安全验收（UAC/看门狗/熔断/硬超时）
 .venv\Scripts\python scripts\test_v08_mcp_vl.py   # v0.8.0 MCP+VL 验收（Stdio/感知/点击/门禁透传）
 .venv\Scripts\python scripts\test_v08_paint_precision.py  # 画图工具像素级精度综合（11 checks）
+.venv\Scripts\python scripts\test_v12_gui_rag.py  # v0.12 GUI RAG 精度 + Guard 全链路（44 checks）
+.venv\Scripts\python scripts\test_v12_heavy_gui.py # v0.12 重型实战：Tk/浏览器填表 + 录制 GIF（28 checks）
 .venv\Scripts\python mcp_server.py                # 以 Stdio 方式作为 MCP Server 供 Agent 拉起
 # Cursor / Claude Desktop 接入：docs/MCP_接入指南.md（含模型下载链接与放置路径）
+# v0.12 设计/边界：docs/v0.12-design.md
 ```
 
 冒烟脚本会把鼠标甩到屏幕左上角再还原（`--failsafe` 时）；`--no-click` 可跳过真实点击。
@@ -295,10 +349,13 @@ HTTP 层   FastAPI @ 127.0.0.1:8030，全部接口挂 /api/ghost/ 前缀
 ### GET /health（免 token）
 
 ```json
-{"status":"ok","service":"moray-ghost","version":"0.2.0","fail_safe_enabled":true,
+{"status":"ok","service":"moray-ghost","version":"0.12.0","fail_safe_enabled":true,
  "token_required":true,"backends":{"screenshot":"mss","input":"pyautogui"},
  "monitors":[{"index":1,"left":0,"top":0,"width":2560,"height":1440,"primary":true}],
- "cursor":[x,y],"db_path":"...\\data\\ghost.db"}
+ "cursor":[x,y],"db_path":"...\\data\\ghost.db",
+ "guard":{"enabled":true,"mode":"block","fail_closed":true,
+          "approval_token_configured":false,"version":"v0.12"},
+ "rag":{"max_candidates":16,"min_conf":0.0,"image_mode":"auto","cache_seconds":2.0}}
 ```
 
 ### GET /screenshot（免 token）
@@ -338,6 +395,66 @@ query：`monitor=1|0|all`（0=全屏联合区，all=各屏数组）、`fmt=png|j
 - 409 `FAIL_SAFE_TRIGGERED`：用户甩鼠标到角落，附 `scene_screenshot_path` +
   `scene_image_b64` 现场截图
 - `hotkey` 的 x/y 可省略；`type` 前会把光标 moveTo 到 (x,y) 并做漂移校验
+- **v0.12 Ghost Guard**：click/double_click/right_click 在 `moveTo` 前对落点
+  控件做局部 OCR；命中高危词 → **409 `PENDING_APPROVAL`**（`hits` /
+  `requires_approval` / `approval_token_configured` / `visual_guard`，动作零输入）。
+  payload 带 `approval_token` 且匹配 `GHOST_APPROVAL_TOKEN` 才放行；成功后
+  响应带 `visual_guard.verdict=approved`。OCR 不可用且
+  `GHOST_GUARD_FAIL_CLOSED=true` → 503 `VISUAL_GUARD_UNAVAILABLE`。
+
+### GUI RAG（v0.12，必须 `X-Ghost-Token`）
+
+#### POST /api/ghost/vl/elements
+
+把原生窗口客户区检索成**带编号的元素表**（OCR 文本 + OpenCV 矩形 + win32
+原生几何三方合并；bbox 全部来自像素/句柄，不含模型坐标）。
+
+```json
+{"window":"无标题 - 记事本","monitor":1,"backend":"auto",
+ "include_icons":false,"max_elements":200,"annotate":false}
+```
+
+```json
+{"ok":true,"backend":"rag_ocr_cv",
+ "window":{"hwnd":123456,"title":"...","process":"notepad.exe"},
+ "elements":[
+   {"id":2,"text":"用户名","type":"input","label":"用户名","value":"moray_user",
+    "bbox":[484,372,365,31],"center":[666,387],"sources":["cv","native"]},
+   {"id":9,"text":"保存成功","type":"button","bbox":[776,607,131,54],
+    "center":[841,634],"sources":["cv","native"]}
+ ],
+ "count":13,
+ "guard":{"verdict":"pending_approval","requires_approval":true,
+          "dangerous_ids":[10,11,12],
+          "hits":[{"token":"删除","category":"deletion","text":"删除账户",
+                   "element_id":10}]},
+ "timings":{"ocr_ms":214,"cv_ms":4,"assemble_ms":2},
+ "annotated_b64":"<可选：编号截图 PNG>"}
+```
+
+#### POST /api/ghost/vl/ground
+
+```json
+{"query":"保存成功","window":"...","strategy":"auto",
+ "match":"auto","use_image":null,"max_candidates":16,"annotate":false}
+```
+
+```json
+{"ok":true,"method":"text_exact|text_contains|vlm_text|vlm_image|text_fallback",
+ "target_id":9,
+ "element":{"id":9,"text":"保存成功","type":"button","bbox":[776,607,131,54],
+            "center":[841,634],"sources":["cv","native"]},
+ "candidates":[{"id":9,"text":"保存成功","type":"button"}],
+ "target_guard":{"requires_approval":false,"hits":[],"dangerous":false},
+ "requires_approval":false,
+ "elapsed_ms":18}
+```
+
+- `strategy=auto`：唯一精确/包含文本命中 → 零模型返回；否则 VLM 选号。
+  `vlm` 强制选号（准确率验收用）；`text` 只做确定性匹配（多命中 409）。
+- VLM 只回 `{"target_id": N}`，服务端把 N 映射回检索表的真实 bbox；
+  不存在/越界/低置信 → 404 `VL_ELEMENT_NOT_FOUND`，绝不猜。
+- 元素检索有 2s 短 TTL 缓存（连续选号免重复 OCR），任何动作后立即失效。
 
 ### 宏系统（骨架）
 
@@ -464,7 +581,8 @@ app/core/task_runner.py     任务状态机（created→queued→running→…�
 app/core/config.py          .env、常量、DB 路径（v0.7.1：GHOST_ENV / 急停热键 / 审计路径）
 app/core/screen_mss.py      thread-local mss + DPI + 编码
 app/core/backend.py         InputBackend 抽象 + PyAutoGUIBackend
-app/core/controller.py      统一安全管道（锁 + Fail-Safe + 前后截图 + v0.7.1 输入源门禁）
+app/core/controller.py      统一安全管道（锁 + Fail-Safe + 前后截图 + v0.7.1 输入源门禁 + v0.12 Ghost Guard 点击前局部 OCR）
+app/core/safety_gate.py     安全红线（窗口/键盘/能力令牌）+ v0.12 dynamic_guard 动态高危词 + 审批令牌
 app/core/auth.py            token 校验（静态 + HMAC Intent Token 可开关）
 app/core/single_instance.py v0.7.1 单实例命名互斥体 + 端口预检（防多开）
 app/core/authz.py           v0.7.1 调用来源/身份上下文 + 生产输入源过滤（SOURCE_DENIED）
@@ -472,12 +590,13 @@ app/core/audit_sink.py      v0.7.1 结构化审计落盘（data/ghost_audit.json
 app/core/janitor.py         v0.7.1 异常清道夫（失败/取消释放按键鼠标 + 线程盘点）
 app/core/estop.py           v0.7.1 全局急停热键 Ctrl+Alt+Q（释放输入 → 审计 → os._exit）
 app/core/breaker.py         v0.7.2 动作频率熔断（窗口/连续双阈值 → 429 + 强制冻结）
-app/core/vl_driver.py       v0.8.0 VL 感知（native/ocr/llama/mock 四后端 + 路由分流 + 匹配铁律；v0.9 GPU/OCR 标签复核；v0.9.1 describe 自由问答）
+app/core/vl_driver.py       v0.8.0 VL 感知（native/ocr/llama/mock 四后端 + 路由分流 + 匹配铁律；v0.9 GPU/OCR 标签复核；v0.9.1 describe；v0.12 GUI RAG 编号元素 + target_id 选号 + 检索缓存）
 app/core/icon_grid.py       v0.9 CV 图标粗筛 + 编号 contact sheet（混合定位）
 app/core/trajectory.py      v0.9.1 绘制资产：Chaikin 平滑 + 降采样 + HSV 色板定位
-app/api/vl_routes.py        v0.8.0 POST /vl/analyze（服务端跑感知，需 token，只读；v0.9 target/hybrid；v0.9.1 + /vl/describe）
+app/core/browser_driver.py  v0.6 CDP 浏览器接管（v0.12 DOM 文本 Ghost Guard + screenshot 录制原语）
+app/api/vl_routes.py        v0.8.0 POST /vl/analyze（v0.9 target/hybrid；v0.9.1 + /vl/describe；v0.12 + /vl/elements /vl/ground）
 app/api/draw_routes.py      v0.9.1 POST /draw_trajectory（取色+落笔复合动作，全安全管道）
-mcp_server.py               v0.8.0 MCP Server（官方 SDK Stdio；v0.9.1 起 5 Tools；身份/白名单环境注入）
+mcp_server.py               v0.8.0 MCP Server（官方 SDK Stdio；v0.9.1 起 5 Tools；v0.12 click_element 优先 GUI RAG；身份/白名单环境注入）
 scripts/ghost_watchdog.py   v0.7.2 独立看门狗（主进程被强杀后 keybd_event 释放修饰键）
 scripts/test_v072_extreme.py  v0.7.2 极限安全验收：UAC/看门狗/熔断/硬超时（40 checks）
 scripts/test_v08_mcp_vl.py  v0.8.0 MCP+VL 验收：Stdio/感知/点击/打字/任务/门禁（21 checks）
@@ -485,10 +604,16 @@ scripts/test_v09_hybrid_icons.py  v0.9 混合图标 CV/编号网格/开关矩阵
 scripts/test_v09_draw_whale.py  v0.9 纯鼠标鲸鱼绘画全链路（25 checks）
 scripts/test_v09_draw_trajectory.py  v0.9.1 通用绘制接口验收：单元/契约/Paint 端到端（31 checks）
 scripts/test_v09_vlm_read_whale.py  v0.9.1 VLM 读自己的画（describe，4 checks）
+scripts/test_v12_gui_rag.py   v0.12 GUI RAG 准确率 + Guard 拦截/审批 + MCP 全链（44 checks）
+scripts/test_v12_heavy_gui.py v0.12 重型实战：Tk 表单 + 本地浏览器表单 + GIF/MP4 录制（28 checks）
+scripts/_v12_form_target.py   v0.12 自建 Tk 表单靶窗（10 控件，危险按钮仅本地回显）
 scripts/make_whale_cover.py  v0.9.1 官方封面生成（docs/assets/whale_cover.html）
 docs/底层物理控制.md         v0.9.1 物理层三大踩坑：SetCursorPos/ctypes 污染/闭合线合并
 docs/v0.8-design.md         v0.8.0 vl_driver + mcp_server 设计结构（与实现同步）
+docs/v0.12-design.md        v0.12 GUI RAG + Ghost Guard 设计/契约/准确率/踩坑
 docs/MCP_接入指南.md         Cursor/Claude Desktop 接入 + 模型下载放置 + 排障
+docs/assets/gui_rag_form_guard.gif    v0.12 原生 Tk 表单实战（RAG 选号/填表/Guard 拦截/审批）
+docs/assets/browser_form_guard.gif    v0.12 本地浏览器表单实战（CDP 填表/Guard/审批）
 scripts/test_v08_paint_precision.py  画图像素级精度综合（MCP 全链 + cv2 逐边对比）
 app/core/macro_store.py     SQLite 读写 + schema 初始化
 app/core/macro_runner.py    重放骨架（v0.3 落地）
@@ -500,7 +625,7 @@ scripts/smoke.py            冒烟：health / screenshot / 401 / click / failsaf
 run.py  start.ps1  .env.example  requirements.txt（v0.7.1 全部 == 锁定）
 ```
 
-## 已知限制（v0.5.0）
+## 已知限制（含 v0.12）
 
 - `type` 的中文/emoji 支持：backend 检测到非 ASCII 文本时自动走**剪贴板粘贴**
   （pyperclip 备份 → 写入 → Ctrl+V → 还原/清空剪贴板；图片剪贴板无法经 pyperclip
@@ -511,3 +636,12 @@ run.py  start.ps1  .env.example  requirements.txt（v0.7.1 全部 == 锁定）
 - 主屏（primary）判定采用虚拟屏 (0,0) 原点启发式（mss 不提供主屏标记）。
 - `coordinates`/`screenshot` 返回的 `width/height` 为缩放后最终图像尺寸；
   审计落盘文件始终是全分辨率。
+- **v0.12 GUI RAG 只支持原生窗口**：URL/Edge/Chrome 目标走 CDP，不跑
+  `extract_ui_elements`；浏览器点击另有 DOM 文本 Ghost Guard。
+- GUI RAG 的 10/10 召回/精确率是本机 10 控件 Tk 靶窗的实测，不代表任意
+  界面；无边框扁平控件/纯图标工具条仍依赖 OCR 文本或 `include_icons`/旧
+  hybrid 路径。2B 目录选号在复杂长目录上仍可能选错，服务端以 404 不猜兜底。
+- Ghost Guard 只扫可见标签（原生：落点控件内部 OCR；CDP：目标 DOM 文本）；
+  OCR 误读可能漏拦/误杀。拖拽起点不做过 OCR Guard（绘图性能取舍）；审批
+  令牌是静态共享密钥（无 per-action nonce/TTL），安全边界依赖令牌保密 +
+  审计 + 人工控制台。

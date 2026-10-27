@@ -65,12 +65,37 @@ except TaskDegradedError as exc:
 - **状态隔离**：带 `agent_id` 的客户端只能看到/操作自己的任务；跨 Agent 访问抛
   `GhostForbiddenError`（403）。不带 `agent_id` = 本机运维方，全量可见。
 
+## 视觉感知 / GUI RAG（v0.12）
+
+```python
+# 1) 带编号的元素表（OCR+CV+win32；bbox 全部来自像素/句柄）
+els = client.vl.elements(window="无标题 - 记事本")
+# {"elements":[{"id":2,"text":"用户名","type":"input","bbox":[...],...}], ...}
+
+# 2) VLM 只选号：target_id → 真实 bbox（模型不生成坐标）
+hit = client.vl.ground("保存成功", window="无标题 - 记事本", strategy="auto")
+# {"method":"text_exact"|"vlm_text", "target_id":9, "element":{...}}
+
+# 3) 自由读图（v0.9.1）
+print(client.vl.describe("这张图里画了什么？").get("description"))
+
+# 4) 旧版通用控件表 / 定向 grounding
+client.vl.analyze(window="无标题 - 记事本")
+client.vl.analyze(window="无标题 - 记事本", target="保存成功")
+```
+
+危险目标（转账/删除/格式化/退出登录…）的点击会被服务端 Ghost Guard 拦截，
+`action.click` / 任务步骤返回 `PENDING_APPROVAL`（409）；审批令牌只应放在
+人工控制台环境，SDK/Agent 侧不要配置。
+
 ## 异常体系
 
 ```
 GhostError                 # 基类：status / error / detail / data
 ├─ GhostAuthError          # 401 token 缺失或错误
 ├─ GhostForbiddenError     # 403 跨 Agent 访问
+├─ GhostRedlineError       # 403 窗口/键盘红线或能力令牌拒绝
+├─ GhostApprovalRequiredError  # 409 PENDING_APPROVAL（动态高危词，动作未执行；.hits）
 ├─ GhostFrozenError        # 503 emergency stop 冻结中（system.release() 解冻）
 ├─ SystemNotReadableError  # 503 锁屏/安全桌面/抓屏失败，勿盲操作
 └─ TaskDegradedError       # 任务挂起（.task 快照）

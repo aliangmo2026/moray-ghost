@@ -145,11 +145,34 @@ CV（Otsu + 连通域）先粗筛小图标，生成带编号的 contact sheet，
 - 回滚 CPU：`pip install llama-cpp-python==0.3.36 --extra-index-url
   https://abetlen.github.io/llama-cpp-python/whl/cpu`。
 
+## 4.4 v0.12 GUI RAG + Ghost Guard（Agent 侧行为变化）
+
+- `click_element` 现在**优先走 GUI RAG**：服务端 OCR+CV+win32 检索带编号的
+  元素表，文本精确命中直接返回（`method=text_exact`）；模糊目标交给 VLM，
+  只回 `{"target_id": N}`，再由服务端映射回真实 bbox——**模型不生成坐标**。
+  响应新增 `target_id` / `method`；未命中时才回落到旧的 analyze/target/hybrid
+  路径，Tools 仍为 5 个，客户端无需改配置。
+- 目标标签命中动态高危词（转账/付款/删除/格式化/退出登录/注销/卸载/重置…）
+  时，服务端在鼠标移动前返回 **409 `PENDING_APPROVAL`**（带 `hits` /
+  `requires_approval` / `target_id`），动作**零输入**。`click_element` 的 MCP
+  层不会读取或透传审批令牌——**Agent 不能自批**。
+- 人类审批走独立控制台：在**人工进程**环境配置 `GHOST_APPROVAL_TOKEN`，
+  调用 `/api/ghost/execute_action` 或 `/browser/action` 时带
+  `"approval_token": "<令牌>"`。令牌不要放进 MCP/Agent 的启动环境。
+- 原生点击前会用 CV 定位落点控件并只 OCR 控件内部文本（避免相邻「删除」
+  误伤）；OCR 引擎不可用时默认 **fail-closed**（503
+  `VISUAL_GUARD_UNAVAILABLE`），可设 `GHOST_GUARD_FAIL_CLOSED=false` 显式降级。
+- CDP 浏览器点击检查目标 DOM 文本（`source=cdp_dom`），同样支持
+  `PENDING_APPROVAL` / `approval_token`。不抓浏览器窗口也能用
+  `op=screenshot` 取页面截图做录屏/审计。
+
 ## 5. 验证（不依赖任何客户端的自动化）
 
 ```powershell
-.venv\Scripts\python scripts\test_v08_mcp_vl.py     # MCP+VL 全链 20 项（含门禁透传）
+.venv\Scripts\python scripts\test_v08_mcp_vl.py     # MCP+VL 全链 21 项（含门禁透传）
 .venv\Scripts\python scripts\test_v08_paint_precision.py  # 画图工具像素级精度综合
+.venv\Scripts\python scripts\test_v12_gui_rag.py    # GUI RAG 准确率 + Guard 拦截/审批（44 checks）
+.venv\Scripts\python scripts\test_v12_heavy_gui.py  # Tk/浏览器填表实战 + GIF 录制（28 checks）
 ```
 
 手工冒烟（客户端里说一句话即可）："打开记事本并在里面输入 hello"——
@@ -166,6 +189,9 @@ CV（Otsu + 连通域）先粗筛小图标，生成带编号的 contact sheet，
 | 返回 `CAPABILITY_DENIED` | 目标进程不在 `GHOST_CAPABILITIES` 白名单——改配置并重启客户端 |
 | 返回 `VL_ELEMENT_NOT_FOUND` | 屏幕上没有该文本的控件（窗口没打开/文本不同），先 `analyze_screen` 看看 |
 | 返回 `WINDOW_NOT_FOUND` / `VL_AMBIGUOUS` | window 子串没命中/命中多个——换成更精确的标题 |
+| 返回 `PENDING_APPROVAL` | 目标标签命中动态高危词（转账/删除/格式化/退出登录…）。动作未执行；由**人工控制台**带 `approval_token` 重新发起，或改点安全目标。Agent 无法自批 |
+| 返回 `VISUAL_GUARD_UNAVAILABLE` | 原生点击前 OCR 不可用且默认 fail-closed。装好 rapidocr/onnxruntime，或显式设 `GHOST_GUARD_FAIL_CLOSED=false` |
+| `click_element` 变慢（首次 1.5–3.5s） | GUI RAG 首次加载 OCR 引擎；之后元素检索 ~0.2–1.4s，VLM 目录选号 ~0.4s（GPU）。连续选号有 2s 缓存 |
 | 网页没反应 | 网页目标走 CDP 分支：需先以 `--remote-debugging-port=9222` 启动浏览器，否则 503 `BROWSER_NOT_CONNECTED` |
 | `analyze_screen` 很慢（首次 10–20s） | llama 模型首载；等一次就好（或未挂模型时用 ocr，~2s） |
 
@@ -178,5 +204,8 @@ CV（Otsu + 连通域）先粗筛小图标，生成带编号的 contact sheet，
   并重启客户端；
 - 每一次动作照常写 `data/ghost_audit.jsonl`（谁、何时、哪个 token 指纹、
   坐标明细）与前后审计截图，MCP 通道与 SDK/HTTP 通道同账本；
+- **审批令牌绝不下发 Agent**：`GHOST_APPROVAL_TOKEN` 只放在人工控制台/审批
+  服务环境；MCP 进程不读取它，`click_element` 遇到危险目标只会返回
+  `PENDING_APPROVAL`。审计另有 `guard_pending` / `guard_approved` 事件；
 - 急停三件套照常可用：网页大红按钮 / `POST /emergency_stop` / 物理
   **Ctrl+Alt+Q**（进程级退出 + 释放全部按键）。

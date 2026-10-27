@@ -12,11 +12,13 @@
 from .ghost_client import (
     DEFAULT_BASE_URL,
     ActionAPI,
+    DrawAPI,
     EnvironmentAPI,
     GhostAuthError,
     GhostClient,
     GhostConnectionError,
     GhostError,
+    GhostApprovalRequiredError,
     GhostForbiddenError,
     GhostFrozenError,
     HealthAPI,
@@ -26,17 +28,20 @@ from .ghost_client import (
     TaskAPI,
     TaskDegradedError,
     TaskTimeoutError,
+    VisionAPI,
     WindowAPI,
 )
 
 __all__ = [
     "DEFAULT_BASE_URL",
     "ActionAPI",
+    "DrawAPI",
     "EnvironmentAPI",
     "GhostAuthError",
     "GhostClient",
     "GhostConnectionError",
     "GhostError",
+    "GhostApprovalRequiredError",
     "GhostForbiddenError",
     "GhostFrozenError",
     "HealthAPI",
@@ -46,6 +51,7 @@ __all__ = [
     "TaskAPI",
     "TaskDegradedError",
     "TaskTimeoutError",
+    "VisionAPI",
     "WindowAPI",
 ]
-__version__ = "0.5.0"
+__version__ = "0.12.0"

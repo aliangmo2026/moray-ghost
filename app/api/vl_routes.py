@@ -50,6 +50,74 @@ class VLDescribeBody(BaseModel):
     max_tokens: int = Field(default=512, ge=32, le=2048)
 
 
+class VLElementsBody(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    monitor: int = Field(default=1, ge=0)
+    window: Optional[str] = None
+    hwnd: Optional[int] = None
+    backend: str = Field(default="auto",
+                         description="auto|ocr|native|mock（native=仅句柄枚举；"
+                                     "其余走 OCR+CV+RAG）")
+    include_icons: bool = Field(default=False,
+                                description="附带 CV 图标候选（无文本工具条）")
+    max_elements: int = Field(default=200, ge=1, le=500)
+    annotate: bool = Field(default=False,
+                           description="返回编号截图 annotated_b64")
+
+
+class VLGroundBody(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    query: str = Field(..., description="目标标签，如「保存成功」「密码输入框」")
+    monitor: int = Field(default=1, ge=0)
+    window: Optional[str] = None
+    hwnd: Optional[int] = None
+    backend: str = Field(default="auto")
+    strategy: str = Field(default="auto",
+                          description="auto|vlm|text|hybrid")
+    match: str = Field(default="auto", description="auto|exact|contains")
+    use_image: Optional[bool] = Field(
+        default=None, description="None=auto（图标候选才带编号截图）")
+    min_conf: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+    max_candidates: int = Field(default=16, ge=1, le=64)
+    include_icons: bool = False
+    annotate: bool = False
+
+
+@router.post("/vl/elements")
+def vl_elements(body: VLElementsBody) -> Dict[str, Any]:
+    """v0.12 GUI RAG 检索层：OCR+CV+win32 → 带编号元素表（只读）。"""
+    try:
+        return vl_driver.extract_ui_elements(
+            monitor=body.monitor, window=body.window, hwnd=body.hwnd,
+            backend=body.backend, include_icons=body.include_icons,
+            max_elements=body.max_elements, annotate=body.annotate)
+    except vl_driver.VLError as exc:
+        content: Dict[str, Any] = {"ok": False, "error": exc.error,
+                                   "detail": exc.detail}
+        content.update(exc.data or {})
+        return JSONResponse(status_code=exc.status, content=content)
+
+
+@router.post("/vl/ground")
+def vl_ground(body: VLGroundBody) -> Dict[str, Any]:
+    """v0.12 GUI RAG 选择层：元素目录 → VLM 只回 target_id → 真实 bbox。"""
+    try:
+        return vl_driver.ground_target(
+            body.query, monitor=body.monitor, window=body.window,
+            hwnd=body.hwnd, backend=body.backend,
+            strategy=body.strategy, match=body.match,
+            use_image=body.use_image, min_conf=body.min_conf,
+            max_candidates=body.max_candidates,
+            include_icons=body.include_icons, annotate=body.annotate)
+    except vl_driver.VLError as exc:
+        content: Dict[str, Any] = {"ok": False, "error": exc.error,
+                                   "detail": exc.detail}
+        content.update(exc.data or {})
+        return JSONResponse(status_code=exc.status, content=content)
+
+
 @router.post("/vl/describe")
 def vl_describe(body: VLDescribeBody) -> Dict[str, Any]:
     """v0.9.1：让本地 VL 模型"读"图——自由问答（不做控件解析）。"""

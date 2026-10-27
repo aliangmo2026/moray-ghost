@@ -17,7 +17,7 @@ ENV_PATH = BASE_DIR / ".env"
 load_dotenv(ENV_PATH)
 
 SERVICE = "moray-ghost"
-VERSION = "0.9.1"
+VERSION = "0.12.0"
 
 HOST = os.getenv("GHOST_HOST", "127.0.0.1")
 PORT = int(os.getenv("GHOST_PORT", "8030"))
@@ -86,6 +86,31 @@ VL_HYBRID = os.getenv("GHOST_VL_HYBRID", "auto").strip().lower() or "auto"
 VL_HYBRID_MIN_CONF = float(os.getenv("GHOST_VL_HYBRID_MIN_CONF", "0.55"))
 # mock 后端夹具 JSON：[{"text","type","bbox":[x,y,w,h]}]
 VL_MOCK_JSON = os.getenv("GHOST_VL_MOCK_JSON", "").strip()
+
+# ---- v0.12.0 GUI RAG + Ghost Guard ---------------------------------------
+# GUI RAG：OCR+CV 检索出的编号元素表 → VLM 只回 {"target_id": N}（无坐标）。
+# 送给 VLM 的候选上限（大屏/密集界面按文本相关度预筛，避免长目录拖慢 2B）。
+RAG_MAX_CANDIDATES = int(os.getenv("GHOST_RAG_MAX_CANDIDATES", "16"))
+# 元素检索短 TTL 缓存（秒）：连续 ground_target 复用同一张元素表，避免
+# 每次重新 OCR（本机 660x540 暖机 ~1.4s）。动作执行后立即失效，绝不缓存
+# 跨动作的旧界面。0 = 关闭缓存。
+RAG_CACHE_SECONDS = float(os.getenv("GHOST_RAG_CACHE_SECONDS", "2.0"))
+# VLM 选号置信度下限（模型未返回 confidence 时不施加门槛）。
+RAG_MIN_CONF = float(os.getenv("GHOST_RAG_MIN_CONF", "0.0"))
+# 是否把编号截图一起送 VLM：auto（图标候选时才带图）/ always / never。
+RAG_IMAGE_MODE = (os.getenv("GHOST_RAG_IMAGE_MODE", "auto").strip().lower()
+                  or "auto")
+
+# 动态视觉门禁（Ghost Guard）：点击前对落点附近 OCR 文本做高危词检测。
+# block（默认）= 命中即 409 PENDING_APPROVAL；off = 关闭（其余结构门禁不变）。
+GUARD_MODE = (os.getenv("GHOST_GUARD", "block").strip().lower() or "block")
+GUARD_ENABLED = GUARD_MODE not in ("0", "false", "no", "off", "disable")
+# OCR 不可用时：true（默认）= 拒绝点击（fail-closed）；false = 放行并审计。
+GUARD_FAIL_CLOSED = os.getenv("GHOST_GUARD_FAIL_CLOSED", "true").strip().lower() \
+    in ("1", "true", "yes", "on")
+# 人类审批令牌：配置后，动作 payload 带 approval_token 且匹配才放行
+# PENDING_APPROVAL。Agent 侧环境里不应持有它（只给人工控制台）。
+APPROVAL_TOKEN = os.getenv("GHOST_APPROVAL_TOKEN", "").strip()
 
 # CDP 浏览器接管（v0.6 M2）：仅允许 loopback 调用点（browser_driver 使用前再校验一次）
 BROWSER_CDP_URL = os.getenv("GHOST_BROWSER_CDP_URL", "http://127.0.0.1:9222").strip()
