@@ -18,8 +18,11 @@ from . import audit_sink
 LOG = logging.getLogger("moray-ghost.janitor")
 
 # 按需启动的常驻 worker 前缀（晚于基线创建属正常，不判杂散）。
+# "pynput." = v0.15 阶段三技能录制器的全局监听线程（仅录制会话期间存活）。
+# "moray-ghost-skill" = 技能录制帧采集线程（与钩子线程解耦，仅会话期间存活）。
 LONG_LIVED_WORKERS = ("moray-ghost-capture", "task-dispatcher",
-                      "moray-ghost-browser")
+                      "moray-ghost-browser", "pynput.", "moray-ghost-skill",
+                      "moray-ghost-ocr-warm")
 # anyio/asyncio 线程池前缀（按请求动态创建，属正常）。
 _POOL_PREFIXES = ("AnyIO", "asyncio_")
 

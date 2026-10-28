@@ -62,6 +62,17 @@ SHOT_MAX_FILES = int(os.getenv("GHOST_SHOT_MAX_FILES", "2000"))
 SYSTEM1_AUTO_DISMISS = os.getenv("GHOST_SYSTEM1_AUTO_DISMISS", "true").strip().lower() \
     in ("1", "true", "yes", "on")
 
+# ---- v0.15 阶段三：自我进化技能库（行为克隆） ------------------------------
+# 录制总开关：true 时允许 /skill/record/* 启动 pynput 全局监听（只读，不产生输入）。
+SKILL_RECORD_ENABLED = os.getenv("GHOST_SKILL_RECORD", "true").strip().lower() \
+    in ("1", "true", "yes", "on")
+# 单次录制事件上限（防失控会话无限增长）；超出即自动停止。
+SKILL_MAX_EVENTS = int(os.getenv("GHOST_SKILL_MAX_EVENTS", "2000"))
+# 点击截图最小间隔（秒）：录制器节流，避免每次点击都全屏 BitBlt 拖慢机器。
+SKILL_SHOT_MIN_INTERVAL = float(os.getenv("GHOST_SKILL_SHOT_INTERVAL", "0.6"))
+# VLM 语义标注最多调用次数（每次 ~3s GPU；模型不可用时零调用，诚实降级）。
+SKILL_ANNOTATE_MAX_CALLS = int(os.getenv("GHOST_SKILL_ANNOTATE_CALLS", "6"))
+
 # ---- v0.8.0 MCP 多模态感知（VL Driver） ------------------------------------
 
 # 感知后端：auto（默认：llama 可用→llama，否则 ocr，否则 native）|

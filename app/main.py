@@ -9,6 +9,8 @@ from __future__ import annotations
 import logging
 import logging.handlers
 import os
+import threading
+import time
 from contextlib import asynccontextmanager
 from typing import Awaitable, Callable, Optional
 
@@ -19,10 +21,11 @@ import app.platforms as platforms  # v0.15 阶段二：动态平台层（包顶�
 
 from app.core import screen_mss  # 先于其他 app 模块：尽早设置 DPI
 from app.core import (auth, authz, audit_sink, backend, config, estop,
-                      janitor, macro_store, single_instance, task_queue)
+                      janitor, macro_store, single_instance, skill_store,
+                      task_queue)
 from app.api import browser_routes, dashboard_routes, draw_routes
-from app.api import environment_routes, macro_routes, routes, task_routes
-from app.api import vl_routes, window_routes
+from app.api import environment_routes, macro_routes, routes, skill_routes
+from app.api import task_routes, vl_routes, window_routes
 
 config.ensure_dirs()
 config.ensure_token()
@@ -106,6 +109,21 @@ def _spawn_watchdog() -> Optional[int]:
 _WATCHDOG_PROC = None
 
 
+def _warm_ocr_async() -> None:
+    """后台预热 OCR（v0.15）：ONNX 会话创建实测 15-25s——若等首次点击才初始化，
+    会顶穿动作硬超时（ACTION_TIMEOUT），服务起来后的第一击直接 408 冻结。
+    启动后异步预热；失败只告警（OCR 后端不可用时点击门禁走既有降级路径）。"""
+    def _warm() -> None:
+        try:
+            from app.core import vl_driver
+            t0 = time.perf_counter()
+            vl_driver._get_ocr()
+            LOG.info("ocr warmed in %.1fs", time.perf_counter() - t0)
+        except Exception as exc:  # noqa: BLE001
+            LOG.warning("ocr warmup failed (non-fatal): %s", exc)
+    threading.Thread(target=_warm, name="moray-ghost-ocr-warm", daemon=True).start()
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     # v0.7.1 单实例门禁（防御层）：run.py 已在进程入口抢占互斥体；此处兜住
@@ -127,6 +145,8 @@ async def lifespan(_: FastAPI):
                                           file=_STACK_FH)
         LOG.info("stackdump enabled: every %ss -> logs/stacks.log", dump_iv)
     macro_store.init_db()
+    skill_store.init_db()      # v0.15 阶段三：技能库（与 macros 同库新表）
+    _warm_ocr_async()          # v0.15：OCR 冷启动 15-25s，预热防首击顶穿硬超时
     backend.release_all_modifiers()  # 启动时清一次可能残留的修饰键（进程曾中途被杀等）
     task_queue.start_dispatcher()    # v0.5：任务 FIFO 单工作线程（串行派发）
     _setup_access_log()
@@ -205,3 +225,4 @@ app.include_router(dashboard_routes.router)
 app.include_router(dashboard_routes.api_router)
 app.include_router(vl_routes.router)   # v0.8.0 /vl/analyze（需 token，只读）
 app.include_router(draw_routes.router)  # v0.9.1 /draw_trajectory（复合绘制动作）
+app.include_router(skill_routes.router)  # v0.15 阶段三 /skill/*（录制+技能库+回放）
