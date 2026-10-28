@@ -8,6 +8,8 @@
 
 Windows 桌面自动化本地服务（v0.15.0）：**mss 极速截图 + 授权式 pyautogui 动作 + 宏录制/安全重放 + 任务生命周期 + 环境感知 + 视觉反哺 Heal + 多 Agent 任务队列 + Web 监控面板 + 官方 Python SDK + MCP Server（Stdio，任意 AI Agent 即插即用，v0.14 起带 Resources 免工具看屏）+ 本地 VL 感知（rapidocr / llama-cpp CUDA GGUF，2B/7B 档位 + CV+VL 混合图标定位）+ GUI RAG（OCR+CV 编号元素表 → VLM 只回 target_id）+ Ghost Guard（点击前动态高危词门禁 → PENDING_APPROVAL / 人工审批令牌）+ 纯鼠标平滑绘制 draw_trajectory + v0.7 绝对防御 + v0.7.1 企业级安全 + v0.7.2 极限安全 + v0.14 多屏混合 DPI 坐标对齐与长时挂机保障 + v0.15 快慢双系统（System1 弹窗反射脑）/ 跨平台驱动抽象 app/platforms/ / 自我进化技能库（pynput 行为克隆 + VLM 语义标注）**。
 
+> 📜 **[致开源社区的公开信（中英双语）](docs/OPEN_LETTER.md)** · 📦 **[v0.15.0 Release Notes](docs/RELEASE_v0.15.0.md)**
+
 只监听 `127.0.0.1:8030`；绝不触碰 `D:\MoRay`（主仓）。
 
 ## 🎬 v0.12 实战实拍（GUI RAG + Ghost Guard，自建本地靶窗，绝不连接真实账户/微信）
