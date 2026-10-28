@@ -1,12 +1,12 @@
 # moray-ghost
 
-![version](https://img.shields.io/badge/version-0.14.0-blue)
+![version](https://img.shields.io/badge/version-0.15.0-blue)
 ![python](https://img.shields.io/badge/python-3.12.2-3776AB?logo=python&logoColor=white)
 ![platform](https://img.shields.io/badge/platform-Windows%2010%20%2F%2011-0078D6)
 ![regression](https://img.shields.io/badge/regression-460%2B%20checks%20passed-brightgreen)
 ![audit](https://img.shields.io/badge/audit-JSONL%20%2B%20token%20fingerprint-lightgrey)
 
-Windows 桌面自动化本地服务（v0.14.0）：**mss 极速截图 + 授权式 pyautogui 动作 + 宏录制/安全重放 + 任务生命周期 + 环境感知 + 视觉反哺 Heal + 多 Agent 任务队列 + Web 监控面板 + 官方 Python SDK + MCP Server（Stdio，任意 AI Agent 即插即用，v0.14 起带 Resources 免工具看屏）+ 本地 VL 感知（rapidocr / llama-cpp CUDA GGUF，2B/7B 档位 + CV+VL 混合图标定位）+ GUI RAG（OCR+CV 编号元素表 → VLM 只回 target_id）+ Ghost Guard（点击前动态高危词门禁 → PENDING_APPROVAL / 人工审批令牌）+ 纯鼠标平滑绘制 draw_trajectory + v0.7 绝对防御 + v0.7.1 企业级安全 + v0.7.2 极限安全 + v0.14 多屏混合 DPI 坐标对齐与长时挂机保障**。
+Windows 桌面自动化本地服务（v0.15.0）：**mss 极速截图 + 授权式 pyautogui 动作 + 宏录制/安全重放 + 任务生命周期 + 环境感知 + 视觉反哺 Heal + 多 Agent 任务队列 + Web 监控面板 + 官方 Python SDK + MCP Server（Stdio，任意 AI Agent 即插即用，v0.14 起带 Resources 免工具看屏）+ 本地 VL 感知（rapidocr / llama-cpp CUDA GGUF，2B/7B 档位 + CV+VL 混合图标定位）+ GUI RAG（OCR+CV 编号元素表 → VLM 只回 target_id）+ Ghost Guard（点击前动态高危词门禁 → PENDING_APPROVAL / 人工审批令牌）+ 纯鼠标平滑绘制 draw_trajectory + v0.7 绝对防御 + v0.7.1 企业级安全 + v0.7.2 极限安全 + v0.14 多屏混合 DPI 坐标对齐与长时挂机保障 + v0.15 快慢双系统（System1 弹窗反射脑）/ 跨平台驱动抽象 app/platforms/ / 自我进化技能库（pynput 行为克隆 + VLM 语义标注）**。
 
 只监听 `127.0.0.1:8030`；绝不触碰 `D:\MoRay`（主仓）。
 
@@ -172,6 +172,25 @@ Windows 桌面自动化本地服务（v0.14.0）：**mss 极速截图 + 授权�
 > **踩坑沉淀**：Edge 同步弹窗会盖住系统级录屏 → 浏览器 GIF 改用 CDP
 > 页面截图；`taskkill /T` 杀不到重挂载的 Edge 窗口宿主 → 以临时
 > `--user-data-dir` 指纹精确杀整棵树。
+>
+> **v0.15.0 AGI 物理躯体三大进化（快慢双系统 / 跨平台抽象 / 自我进化）**：
+> ① **System1 微型反射脑**——`require_vision` 挂起前，本地 OCR 规则库
+> （特征词「软件更新/广告/隐私协议/每日提示…」× 关闭类按钮「关闭/×/稍后/
+> 同意…」同窗 AND 命中，按钮按安全优先级排序、同意永远最后）直接本地
+> 点击消解，任务继续不返 degraded；UAC/黑名单窗口在 OCR 之前零输入拒绝；
+> `GHOST_SYSTEM1_AUTO_DISMISS` 一键开关；**47/47**。
+> ② **跨平台驱动抽象**——`app/platforms/`：BaseScreen/BaseInput 契约 +
+> Windows 真身全量迁入 + macos/linux NotImplementedError 骨架（绝不假装
+> 能跑）+ 按 `sys.platform` 动态加载；`core/screen_mss.py`、`core/backend.py`
+> 变再导出 shim（全量 `is` 同一性 = 单一模块状态零分裂，旧引用零回归）；
+> **21/21** + v14_dpi 20/20 + v072 40/40。
+> ③ **自我进化技能库（行为克隆）**——pynput 全局静默录制点击/打字/滚动
+> （回调只入队微秒级返回，BitBlt 重活独立线程——阻塞钩子线程会拖死注入
+> 输入链）+ 点击现场帧 + VLM 逐点击语义标注 target_text（llama 不可用
+> 诚实降级：原始坐标 + 低置信度）+ SQLite 技能表 + `/skill/*` 六端点 +
+> 回放走 run_action 全门禁（`continue_on_error` 噪声容忍：人类鼠标噪声被
+> 能力白名单零输入拒绝）；**28/28**。顺手修产品级隐患：OCR ONNX 冷启动
+> 15-25s 会顶穿首击硬超时 → 服务启动后台预热。
 >
 > **v0.14.0 极致鲁棒性与跨环境适配（开源工业级底座的恶劣环境压力位）**：
 > ① **多屏与混合 DPI 坐标对齐**——DPI 感知收口到新模块
@@ -379,7 +398,7 @@ HTTP 层   FastAPI @ 127.0.0.1:8030，全部接口挂 /api/ghost/ 前缀
 ### GET /health（免 token）
 
 ```json
-{"status":"ok","service":"moray-ghost","version":"0.14.0","fail_safe_enabled":true,
+{"status":"ok","service":"moray-ghost","version":"0.15.0","fail_safe_enabled":true,
  "token_required":true,"backends":{"screenshot":"mss","input":"pyautogui"},
  "monitors":[{"index":1,"left":0,"top":0,"width":2560,"height":1440,"primary":true}],
  "cursor":[x,y],"db_path":"...\\data\\ghost.db",

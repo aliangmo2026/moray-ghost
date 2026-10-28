@@ -17,7 +17,7 @@ ENV_PATH = BASE_DIR / ".env"
 load_dotenv(ENV_PATH)
 
 SERVICE = "moray-ghost"
-VERSION = "0.14.0"
+VERSION = "0.15.0"
 
 HOST = os.getenv("GHOST_HOST", "127.0.0.1")
 PORT = int(os.getenv("GHOST_PORT", "8030"))
