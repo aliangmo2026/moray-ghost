@@ -15,6 +15,8 @@ from typing import Awaitable, Callable, Optional
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
+import app.platforms as platforms  # v0.15 阶段二：动态平台层（包顶懒加载，无副作用）
+
 from app.core import screen_mss  # 先于其他 app 模块：尽早设置 DPI
 from app.core import (auth, authz, audit_sink, backend, config, estop,
                       janitor, macro_store, single_instance, task_queue)
@@ -133,9 +135,9 @@ async def lifespan(_: FastAPI):
     audit_sink.write("service_start", host=config.HOST, port=config.PORT,
                      mode="production" if config.IS_PRODUCTION else "development",
                      estop_hotkey=estop.combo())
-    LOG.info("moray-ghost v%s listening on http://%s:%s (dpi_aware=%s env=%s)",
+    LOG.info("moray-ghost v%s listening on http://%s:%s (dpi_aware=%s env=%s platform=%s)",
              config.VERSION, config.HOST, config.PORT, screen_mss.DPI_AWARE,
-             config.ENV_MODE)
+             config.ENV_MODE, platforms.platform_name())
     LOG.info("fail_safe_enabled=true token_required=true intent_token=%s "
              "estop_hotkey=%s", config.INTENT_TOKEN_ENABLED, estop.combo())
     LOG.info("db=%s screenshots=%s audit=%s", config.DB_PATH,

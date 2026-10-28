@@ -22,6 +22,16 @@ UOI_NAME = 2
 DESKTOP_READOBJECTS = 0x0001
 
 
+def _platform_name() -> str:
+    """当前平台层标识（v0.15 阶段二）。platforms 包顶懒加载无副作用；
+    失败如实回显 unknown，绝不阻断环境快照。"""
+    try:
+        from app import platforms
+        return platforms.platform_name()
+    except Exception:  # noqa: BLE001
+        return "unknown"
+
+
 class SystemNotReadable(Exception):
     """系统不可输入（锁屏 / 安全桌面 / 抓屏失败）。snapshot 供响应体回显。"""
 
@@ -80,6 +90,7 @@ def snapshot(probe_grab: bool = True) -> Dict[str, Any]:
         "foreground_hwnd": fg,
         "input_allowed": input_allowed,
         "grab": grab_st,
+        "platform": _platform_name(),
         # v0.14：DPI 档位 + 各屏物理矩形 + 虚拟桌面一致性（混合 DPI 野外排障）
         "screen": screen_mss.dpi_status(),
         "modifiers_down": backend.pressed_modifiers(),
