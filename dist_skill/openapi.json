@@ -1,0 +1,2518 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "moray-ghost",
+    "version": "0.15.0"
+  },
+  "paths": {
+    "/api/ghost/health": {
+      "get": {
+        "summary": "Health",
+        "description": "v0.7.2 关键路径异步化：async 处理器直接跑在事件循环上，绝不排队等\n线程池——即使所有动作线程被长任务占满，健康检查依然即时返回。\n\nv0.8.2：回显 VL 真视觉后端（配置/实际选中/模型/GPU offload 能力）。",
+        "operationId": "health_api_ghost_health_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response Health Api Ghost Health Get"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/ghost/screenshot": {
+      "get": {
+        "summary": "Screenshot",
+        "operationId": "screenshot_api_ghost_screenshot_get",
+        "parameters": [
+          {
+            "name": "monitor",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "string"
+                }
+              ],
+              "description": "1=主屏；0=全屏联合区；all=各屏数组；或屏号",
+              "default": "1",
+              "title": "Monitor"
+            },
+            "description": "1=主屏；0=全屏联合区；all=各屏数组；或屏号"
+          },
+          {
+            "name": "fmt",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "pattern": "^(png|jpeg)$",
+              "default": "jpeg",
+              "title": "Fmt"
+            }
+          },
+          {
+            "name": "quality",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 95,
+              "minimum": 10,
+              "default": 70,
+              "title": "Quality"
+            }
+          },
+          {
+            "name": "scale",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "number",
+              "maximum": 1.0,
+              "minimum": 0.1,
+              "default": 1.0,
+              "title": "Scale"
+            }
+          },
+          {
+            "name": "save",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "default": false,
+              "title": "Save"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Screenshot Api Ghost Screenshot Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/ghost/execute_action": {
+      "post": {
+        "summary": "Execute Action",
+        "operationId": "execute_action_api_ghost_execute_action_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ExecuteRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response Execute Action Api Ghost Execute Action Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/ghost/macro": {
+      "get": {
+        "summary": "List Macros",
+        "operationId": "list_macros_api_ghost_macro_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response List Macros Api Ghost Macro Get"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/ghost/macro/{macro_id}": {
+      "get": {
+        "summary": "Get Macro",
+        "operationId": "get_macro_api_ghost_macro__macro_id__get",
+        "parameters": [
+          {
+            "name": "macro_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Macro Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/ghost/macro/record/start": {
+      "post": {
+        "summary": "Record Start",
+        "description": "开启录制会话。录制期间 /execute_action 的每个成功动作自动追加步骤。",
+        "operationId": "record_start_api_ghost_macro_record_start_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/app__api__macro_routes__RecordStartBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/ghost/macro/record/stop": {
+      "post": {
+        "summary": "Record Stop",
+        "description": "结束录制并把步骤写入 SQLite macros 表，返回 macro_id。",
+        "operationId": "record_stop_api_ghost_macro_record_stop_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/app__api__macro_routes__RecordStopBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/ghost/macro/probe": {
+      "post": {
+        "summary": "Probe",
+        "description": "锚点匹配查询（只读，不执行任何动作，不做重放）。\n\n四态语义（铁律）：\n- matched    → 200，center 为全屏物理像素（无论是否用窗口 ROI），可直接喂\n               /execute_action（不带 source_width）\n- not_found  → 200，抓屏成功但搜索区内没有该锚点——这才允许触发\"降级让主仓重新识图\"\n- capture_failed → 503，抓屏本身失败——主仓应重试当前步骤，绝不能降级识图\n- window_not_found → 409，指定 hwnd 但窗口无效/最小化——主仓应恢复窗口后重试",
+        "operationId": "probe_api_ghost_macro_probe_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProbeBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/ghost/macro/{macro_id}/replay": {
+      "post": {
+        "summary": "Replay",
+        "description": "安全重放：锚点匹配驱动，逐步走 controller 同一安全管道。\n\n- dry_run=true：只做窗口存活 + 锚点匹配报告，不产生任何输入。\n- 409 WINDOW_NOT_FOUND：目标窗口不存在/最小化。\n- 409 MACRO_NOT_FOUND：锚点匹配失败（附 best_score + 现场截图），终止整个宏，\n  交主仓重新识图；绝不自行用 recorded_center 兜底。\n- 503 CAPTURE_FAILED：抓屏失败（已重试），主仓应重试本宏。",
+        "operationId": "replay_api_ghost_macro__macro_id__replay_post",
+        "parameters": [
+          {
+            "name": "macro_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Macro Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReplayBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/ghost/macro/{macro_id}/heal": {
+      "post": {
+        "summary": "Heal",
+        "description": "视觉反哺 Heal（v0.4 M4）：主仓 Iris 以视觉结果回填锚点，ghost 不做视觉推断。\n\n- relocate：主仓只给 vision.center → ghost 当前屏即用即裁 64x64 新锚点。\n- reanchor：主仓直接给 vision.crop → 校验可解码且非退化后替换。\n- 乐观锁 base_version 不匹配 → 409；version 成功 +1；全量写 macro_heal_log。",
+        "operationId": "heal_api_ghost_macro__macro_id__heal_post",
+        "parameters": [
+          {
+            "name": "macro_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Macro Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HealBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/ghost/window/list": {
+      "get": {
+        "summary": "List Windows",
+        "operationId": "list_windows_api_ghost_window_list_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response List Windows Api Ghost Window List Get"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/ghost/environment": {
+      "get": {
+        "summary": "Environment State",
+        "operationId": "environment_state_api_ghost_environment_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response Environment State Api Ghost Environment Get"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/ghost/task": {
+      "post": {
+        "summary": "Create Task",
+        "operationId": "create_task_api_ghost_task_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TaskCreateBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/ghost/task/{task_id}/start": {
+      "post": {
+        "summary": "Start Task",
+        "operationId": "start_task_api_ghost_task__task_id__start_post",
+        "parameters": [
+          {
+            "name": "task_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Task Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/ghost/task/{task_id}": {
+      "get": {
+        "summary": "Get Task",
+        "operationId": "get_task_api_ghost_task__task_id__get",
+        "parameters": [
+          {
+            "name": "task_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Task Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/ghost/task/{task_id}/resume": {
+      "post": {
+        "summary": "Resume Task",
+        "operationId": "resume_task_api_ghost_task__task_id__resume_post",
+        "parameters": [
+          {
+            "name": "task_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Task Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/ghost/task/{task_id}/cancel": {
+      "post": {
+        "summary": "Cancel Task",
+        "operationId": "cancel_task_api_ghost_task__task_id__cancel_post",
+        "parameters": [
+          {
+            "name": "task_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Task Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/ghost/tasks": {
+      "get": {
+        "summary": "List Tasks",
+        "description": "任务列表。带 X-Agent-Id 只见自己的任务；不带 = 运维方全量视图。",
+        "operationId": "list_tasks_api_ghost_tasks_get",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 500,
+              "minimum": 1,
+              "default": 50,
+              "title": "Limit"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/ghost/emergency_stop": {
+      "post": {
+        "summary": "Emergency Stop",
+        "description": "紧急停止：清空任务队列（排队任务全部 canceled）+ 冻结 Ghost。\n\nv0.7.2：async 化——急停按钮在任何线程池饱和场景下都即时生效（事件循环直跑）。\n冻结生效后 start/resume/execute_action/宏重放一律 503 GHOST_FROZEN；\n正在跑的任务在下一个步骤边界安全点停止（绝不切断进行中的输入）。\n解冻：POST /api/ghost/emergency_stop/release。",
+        "operationId": "emergency_stop_api_ghost_emergency_stop_post",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/ghost/emergency_stop/release": {
+      "post": {
+        "summary": "Emergency Stop Release",
+        "operationId": "emergency_stop_release_api_ghost_emergency_stop_release_post",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/ghost/browser/tabs": {
+      "get": {
+        "summary": "List Tabs",
+        "description": "列出已打开的 tab（只读）。未连上调试端口 → 503 BROWSER_NOT_CONNECTED。",
+        "operationId": "list_tabs_api_ghost_browser_tabs_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response List Tabs Api Ghost Browser Tabs Get"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/ghost/browser/action": {
+      "post": {
+        "summary": "Browser Action",
+        "operationId": "browser_action_api_ghost_browser_action_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BrowserActionBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response Browser Action Api Ghost Browser Action Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/dashboard": {
+      "get": {
+        "summary": "Dashboard",
+        "operationId": "dashboard_dashboard_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/ghost/dashboard/state": {
+      "get": {
+        "summary": "Dashboard State",
+        "operationId": "dashboard_state_api_ghost_dashboard_state_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response Dashboard State Api Ghost Dashboard State Get"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/ghost/actions/recent": {
+      "get": {
+        "summary": "Actions Recent",
+        "description": "驾驶舱实时动作日志（v0.6 M3，只读，与 /screenshot 同级放行）。",
+        "operationId": "actions_recent_api_ghost_actions_recent_get",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "default": 50,
+              "title": "Limit"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Actions Recent Api Ghost Actions Recent Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/ghost/actions/thumb/{name}": {
+      "get": {
+        "summary": "Actions Thumb",
+        "description": "动作执行后截图的 96px 缩略（basename 白名单，防路径穿越）。",
+        "operationId": "actions_thumb_api_ghost_actions_thumb__name__get",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Name"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/ghost/vl/elements": {
+      "post": {
+        "summary": "Vl Elements",
+        "description": "v0.12 GUI RAG 检索层：OCR+CV+win32 → 带编号元素表（只读）。",
+        "operationId": "vl_elements_api_ghost_vl_elements_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/VLElementsBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response Vl Elements Api Ghost Vl Elements Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/ghost/vl/ground": {
+      "post": {
+        "summary": "Vl Ground",
+        "description": "v0.12 GUI RAG 选择层：元素目录 → VLM 只回 target_id → 真实 bbox。",
+        "operationId": "vl_ground_api_ghost_vl_ground_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/VLGroundBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response Vl Ground Api Ghost Vl Ground Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/ghost/vl/describe": {
+      "post": {
+        "summary": "Vl Describe",
+        "description": "v0.9.1：让本地 VL 模型\"读\"图——自由问答（不做控件解析）。",
+        "operationId": "vl_describe_api_ghost_vl_describe_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/VLDescribeBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response Vl Describe Api Ghost Vl Describe Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/ghost/vl/analyze": {
+      "post": {
+        "summary": "Vl Analyze",
+        "operationId": "vl_analyze_api_ghost_vl_analyze_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/VLAnalyzeBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response Vl Analyze Api Ghost Vl Analyze Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/ghost/draw_trajectory": {
+      "post": {
+        "summary": "Draw Trajectory",
+        "operationId": "draw_trajectory_api_ghost_draw_trajectory_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DrawTrajectoryBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response Draw Trajectory Api Ghost Draw Trajectory Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/ghost/skill/record/start": {
+      "post": {
+        "summary": "Skill Record Start",
+        "operationId": "skill_record_start_api_ghost_skill_record_start_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/app__api__skill_routes__RecordStartBody"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Body"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response Skill Record Start Api Ghost Skill Record Start Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/ghost/skill/record/stop": {
+      "post": {
+        "summary": "Skill Record Stop",
+        "operationId": "skill_record_stop_api_ghost_skill_record_stop_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/app__api__skill_routes__RecordStopBody"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Body"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response Skill Record Stop Api Ghost Skill Record Stop Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/ghost/skill/record/status": {
+      "get": {
+        "summary": "Skill Record Status",
+        "operationId": "skill_record_status_api_ghost_skill_record_status_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response Skill Record Status Api Ghost Skill Record Status Get"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/ghost/skill/list": {
+      "get": {
+        "summary": "Skill List",
+        "operationId": "skill_list_api_ghost_skill_list_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response Skill List Api Ghost Skill List Get"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/ghost/skill/{skill_id}": {
+      "get": {
+        "summary": "Skill Get",
+        "operationId": "skill_get_api_ghost_skill__skill_id__get",
+        "parameters": [
+          {
+            "name": "skill_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Skill Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Skill Get Api Ghost Skill  Skill Id  Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "summary": "Skill Delete",
+        "operationId": "skill_delete_api_ghost_skill__skill_id__delete",
+        "parameters": [
+          {
+            "name": "skill_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Skill Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Skill Delete Api Ghost Skill  Skill Id  Delete"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/ghost/skill/run": {
+      "post": {
+        "summary": "Skill Run",
+        "operationId": "skill_run_api_ghost_skill_run_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RunBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response Skill Run Api Ghost Skill Run Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "BrowserActionBody": {
+        "properties": {
+          "op": {
+            "type": "string",
+            "pattern": "^(click|dblclick|hover|fill|press|scroll|drag|tabs|close_tab|screenshot)$",
+            "title": "Op"
+          },
+          "tab": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tab",
+            "description": "{\"url_contains\": \"...\"} 约束操作的 tab"
+          },
+          "selector": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Selector",
+            "description": "{\"by\": \"css|role|text|placeholder|label|testid\", \"value\": \"...\", \"nth\": 0}"
+          },
+          "text": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Text",
+            "description": "fill 的文本 / press 的按键名"
+          },
+          "dx": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Dx"
+          },
+          "dy": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Dy"
+          },
+          "points": {
+            "anyOf": [
+              {
+                "items": {
+                  "items": {
+                    "type": "number"
+                  },
+                  "type": "array"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Points",
+            "description": "drag 轨迹（页面 CSS px）"
+          },
+          "approval_token": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Approval Token",
+            "description": "人类审批令牌（Ghost Guard PENDING_APPROVAL 时使用；agent 不应持有）"
+          }
+        },
+        "additionalProperties": true,
+        "type": "object",
+        "required": [
+          "op"
+        ],
+        "title": "BrowserActionBody"
+      },
+      "DrawTrajectoryBody": {
+        "properties": {
+          "points": {
+            "items": {
+              "items": {
+                "type": "number"
+              },
+              "type": "array"
+            },
+            "type": "array",
+            "title": "Points",
+            "description": "轨迹控制点 [[x,y],...]（物理像素，≥2 点）"
+          },
+          "color": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Color",
+            "description": "落笔前点击的色板颜色：名称或 #RRGGBB（缺省=不取色）"
+          },
+          "color_required": {
+            "type": "boolean",
+            "title": "Color Required",
+            "description": "true=色板未找到时 404 拒绝；false（默认）=用当前色如实 fallback",
+            "default": false
+          },
+          "hwnd": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Hwnd",
+            "description": "目标窗口 hwnd"
+          },
+          "window": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Window",
+            "description": "窗口标题子串（与 hwnd 二选一；都缺省=前台）"
+          },
+          "monitor": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Monitor",
+            "default": 1
+          },
+          "duration_ms": {
+            "type": "integer",
+            "maximum": 10000.0,
+            "minimum": 100.0,
+            "title": "Duration Ms",
+            "default": 800
+          },
+          "smooth_iterations": {
+            "type": "integer",
+            "maximum": 4.0,
+            "minimum": 0.0,
+            "title": "Smooth Iterations",
+            "description": "Chaikin 切角迭代次数（0=不平滑，2=推荐）",
+            "default": 2
+          },
+          "closed": {
+            "type": "boolean",
+            "title": "Closed",
+            "description": "true=闭合曲线（首尾相接；注意画图软件会并成闭合形状）",
+            "default": false
+          },
+          "settle_seconds": {
+            "type": "number",
+            "maximum": 5.0,
+            "minimum": 0.0,
+            "title": "Settle Seconds",
+            "default": 0.1
+          },
+          "palette_region": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "number"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Palette Region",
+            "description": "色板搜索区（窗口相对分数 [x0,y0,x1,y1]，默认整宽×顶部 30%）"
+          },
+          "is_painting": {
+            "type": "boolean",
+            "title": "Is Painting",
+            "description": "长时绘图任务标识：豁免频率熔断的指纹计数（合法绘图的离散坐标不会构成死循环）；冻结/归属/前台/Fail-Safe/硬超时等其余安全门禁一道不少，审计照记",
+            "default": false
+          },
+          "capabilities": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Capabilities"
+          }
+        },
+        "additionalProperties": true,
+        "type": "object",
+        "required": [
+          "points"
+        ],
+        "title": "DrawTrajectoryBody"
+      },
+      "ExecuteRequest": {
+        "properties": {
+          "action": {
+            "type": "string",
+            "title": "Action",
+            "description": "click|double_click|right_click|move|type|hotkey|drag|scroll"
+          },
+          "x": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "X"
+          },
+          "y": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Y"
+          },
+          "text": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Text"
+          },
+          "monitor": {
+            "type": "integer",
+            "title": "Monitor",
+            "default": 1
+          },
+          "settle_seconds": {
+            "type": "number",
+            "title": "Settle Seconds",
+            "default": 0.5
+          },
+          "include_before_b64": {
+            "type": "boolean",
+            "title": "Include Before B64",
+            "default": false
+          },
+          "fmt": {
+            "type": "string",
+            "title": "Fmt",
+            "default": "jpeg"
+          },
+          "quality": {
+            "type": "integer",
+            "maximum": 95.0,
+            "minimum": 10.0,
+            "title": "Quality",
+            "default": 70
+          },
+          "scale": {
+            "type": "number",
+            "maximum": 1.0,
+            "minimum": 0.1,
+            "title": "Scale",
+            "default": 0.5
+          },
+          "x2": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "X2"
+          },
+          "y2": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Y2"
+          },
+          "points": {
+            "anyOf": [
+              {
+                "items": {
+                  "items": {
+                    "type": "integer"
+                  },
+                  "type": "array"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Points",
+            "description": "drag 轨迹点 [[x,y],...]，≤2000 点"
+          },
+          "points_t": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "integer"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Points T",
+            "description": "drag 轨迹毫秒时间戳（相对起点，非递减）"
+          },
+          "duration_ms": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "maximum": 10000.0,
+                "minimum": 100.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Duration Ms"
+          },
+          "dy": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Dy"
+          },
+          "smooth": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Smooth"
+          },
+          "source_width": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Width"
+          },
+          "source_height": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Height"
+          },
+          "hwnd": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Hwnd"
+          }
+        },
+        "additionalProperties": true,
+        "type": "object",
+        "required": [
+          "action"
+        ],
+        "title": "ExecuteRequest"
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "type": "array",
+            "title": "Detail"
+          }
+        },
+        "type": "object",
+        "title": "HTTPValidationError"
+      },
+      "HealBody": {
+        "properties": {
+          "task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Id"
+          },
+          "step_id": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Step Id"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          },
+          "mode": {
+            "type": "string",
+            "pattern": "^(relocate|reanchor)$",
+            "title": "Mode"
+          },
+          "base_version": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Base Version",
+            "description": "乐观锁：须等于当前 macros.version"
+          },
+          "vision": {
+            "$ref": "#/components/schemas/VisionPayload"
+          }
+        },
+        "additionalProperties": true,
+        "type": "object",
+        "required": [
+          "step_id",
+          "mode",
+          "base_version",
+          "vision"
+        ],
+        "title": "HealBody"
+      },
+      "ProbeBody": {
+        "properties": {
+          "screenshot_crop": {
+            "type": "string",
+            "title": "Screenshot Crop",
+            "description": "模板小图（base64 PNG，物理像素裁剪）"
+          },
+          "match_threshold": {
+            "type": "number",
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Match Threshold",
+            "default": 0.8
+          },
+          "monitor": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Monitor",
+            "default": 1
+          },
+          "window_hwnd": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Window Hwnd",
+            "description": "给出时只在该窗口当前 rect 内匹配（每次实时取 rect，不缓存）"
+          }
+        },
+        "additionalProperties": true,
+        "type": "object",
+        "required": [
+          "screenshot_crop"
+        ],
+        "title": "ProbeBody"
+      },
+      "ReplayBody": {
+        "properties": {
+          "dry_run": {
+            "type": "boolean",
+            "title": "Dry Run",
+            "default": false
+          },
+          "allow_fallback": {
+            "type": "boolean",
+            "title": "Allow Fallback",
+            "default": false
+          },
+          "task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Id"
+          },
+          "hwnd": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Hwnd"
+          },
+          "capabilities": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Capabilities"
+          }
+        },
+        "additionalProperties": true,
+        "type": "object",
+        "title": "ReplayBody"
+      },
+      "RunBody": {
+        "properties": {
+          "skill_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Skill Id"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "capabilities": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Capabilities"
+          },
+          "continue_on_error": {
+            "type": "boolean",
+            "title": "Continue On Error",
+            "default": false
+          }
+        },
+        "type": "object",
+        "title": "RunBody"
+      },
+      "TaskCreateBody": {
+        "properties": {
+          "task_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Id"
+          },
+          "goal": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Goal"
+          },
+          "steps": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Steps"
+          },
+          "capabilities": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Capabilities"
+          }
+        },
+        "additionalProperties": true,
+        "type": "object",
+        "required": [
+          "steps"
+        ],
+        "title": "TaskCreateBody"
+      },
+      "VLAnalyzeBody": {
+        "properties": {
+          "monitor": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Monitor",
+            "default": 1
+          },
+          "window": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Window",
+            "description": "窗口标题子串 / http(s) URL（→ CDP 分支拒绝）"
+          },
+          "hwnd": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Hwnd"
+          },
+          "backend": {
+            "type": "string",
+            "title": "Backend",
+            "description": "auto|native|ocr|llama|mock",
+            "default": "auto"
+          },
+          "target": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Target",
+            "description": "定向 grounding：只定位标签包含该文本的控件（llama）"
+          },
+          "hybrid": {
+            "type": "boolean",
+            "title": "Hybrid",
+            "description": "CV 图标粗筛 + 编号网格 + VL 选号（建议 7B）",
+            "default": false
+          }
+        },
+        "additionalProperties": true,
+        "type": "object",
+        "title": "VLAnalyzeBody"
+      },
+      "VLDescribeBody": {
+        "properties": {
+          "question": {
+            "type": "string",
+            "title": "Question",
+            "description": "自由问题，如：这张图里画了什么？"
+          },
+          "image_b64": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Image B64",
+            "description": "直接喂图（base64，主仓自己的截图/裁剪）；缺省则抓屏/裁窗口"
+          },
+          "monitor": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Monitor",
+            "default": 1
+          },
+          "window": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Window"
+          },
+          "hwnd": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Hwnd"
+          },
+          "backend": {
+            "type": "string",
+            "title": "Backend",
+            "description": "仅 llama 支持 describe",
+            "default": "auto"
+          },
+          "max_tokens": {
+            "type": "integer",
+            "maximum": 2048.0,
+            "minimum": 32.0,
+            "title": "Max Tokens",
+            "default": 512
+          }
+        },
+        "additionalProperties": true,
+        "type": "object",
+        "required": [
+          "question"
+        ],
+        "title": "VLDescribeBody"
+      },
+      "VLElementsBody": {
+        "properties": {
+          "monitor": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Monitor",
+            "default": 1
+          },
+          "window": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Window"
+          },
+          "hwnd": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Hwnd"
+          },
+          "backend": {
+            "type": "string",
+            "title": "Backend",
+            "description": "auto|ocr|native|mock（native=仅句柄枚举；其余走 OCR+CV+RAG）",
+            "default": "auto"
+          },
+          "include_icons": {
+            "type": "boolean",
+            "title": "Include Icons",
+            "description": "附带 CV 图标候选（无文本工具条）",
+            "default": false
+          },
+          "max_elements": {
+            "type": "integer",
+            "maximum": 500.0,
+            "minimum": 1.0,
+            "title": "Max Elements",
+            "default": 200
+          },
+          "annotate": {
+            "type": "boolean",
+            "title": "Annotate",
+            "description": "返回编号截图 annotated_b64",
+            "default": false
+          }
+        },
+        "additionalProperties": true,
+        "type": "object",
+        "title": "VLElementsBody"
+      },
+      "VLGroundBody": {
+        "properties": {
+          "query": {
+            "type": "string",
+            "title": "Query",
+            "description": "目标标签，如「保存成功」「密码输入框」"
+          },
+          "monitor": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Monitor",
+            "default": 1
+          },
+          "window": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Window"
+          },
+          "hwnd": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Hwnd"
+          },
+          "backend": {
+            "type": "string",
+            "title": "Backend",
+            "default": "auto"
+          },
+          "strategy": {
+            "type": "string",
+            "title": "Strategy",
+            "description": "auto|vlm|text|hybrid",
+            "default": "auto"
+          },
+          "match": {
+            "type": "string",
+            "title": "Match",
+            "description": "auto|exact|contains",
+            "default": "auto"
+          },
+          "use_image": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Use Image",
+            "description": "None=auto（图标候选才带编号截图）"
+          },
+          "min_conf": {
+            "anyOf": [
+              {
+                "type": "number",
+                "maximum": 1.0,
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Min Conf"
+          },
+          "max_candidates": {
+            "type": "integer",
+            "maximum": 64.0,
+            "minimum": 1.0,
+            "title": "Max Candidates",
+            "default": 16
+          },
+          "include_icons": {
+            "type": "boolean",
+            "title": "Include Icons",
+            "default": false
+          },
+          "annotate": {
+            "type": "boolean",
+            "title": "Annotate",
+            "default": false
+          }
+        },
+        "additionalProperties": true,
+        "type": "object",
+        "required": [
+          "query"
+        ],
+        "title": "VLGroundBody"
+      },
+      "ValidationError": {
+        "properties": {
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "type": "array",
+            "title": "Location"
+          },
+          "msg": {
+            "type": "string",
+            "title": "Message"
+          },
+          "type": {
+            "type": "string",
+            "title": "Error Type"
+          },
+          "input": {
+            "title": "Input"
+          },
+          "ctx": {
+            "type": "object",
+            "title": "Context"
+          }
+        },
+        "type": "object",
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError"
+      },
+      "VisionPayload": {
+        "properties": {
+          "found": {
+            "type": "boolean",
+            "title": "Found",
+            "default": true
+          },
+          "center": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "integer"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Center",
+            "description": "全屏物理像素（Iris 认定的按钮新位置）"
+          },
+          "crop": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Crop",
+            "description": "mode=reanchor 必填：新锚点图 base64 PNG"
+          }
+        },
+        "additionalProperties": true,
+        "type": "object",
+        "title": "VisionPayload"
+      },
+      "app__api__macro_routes__RecordStartBody": {
+        "properties": {
+          "task_id": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Task Id"
+          }
+        },
+        "additionalProperties": true,
+        "type": "object",
+        "required": [
+          "task_id"
+        ],
+        "title": "RecordStartBody"
+      },
+      "app__api__macro_routes__RecordStopBody": {
+        "properties": {
+          "task_id": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Task Id"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "app_signature": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "App Signature"
+          }
+        },
+        "additionalProperties": true,
+        "type": "object",
+        "required": [
+          "task_id"
+        ],
+        "title": "RecordStopBody"
+      },
+      "app__api__skill_routes__RecordStartBody": {
+        "properties": {
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          }
+        },
+        "type": "object",
+        "title": "RecordStartBody"
+      },
+      "app__api__skill_routes__RecordStopBody": {
+        "properties": {
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          }
+        },
+        "type": "object",
+        "title": "RecordStopBody"
+      }
+    }
+  }
+}

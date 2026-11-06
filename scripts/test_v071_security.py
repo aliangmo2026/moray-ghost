@@ -501,8 +501,9 @@ def phase_production() -> None:
 # ============================== E. 开源标准静态检查 ==============================
 def phase_static() -> None:
     print("\n---- E 开源标准静态检查（路径/依赖/凭据）----", flush=True)
-    # 负向前瞻排除 URL scheme（http:// 的 "p:/" 不算盘符路径）
-    drive = re.compile(r"[A-Za-z]:[\\/](?![\\/])")
+    # 负向前瞻排除 URL scheme（http:// 的 "p:/" 不算盘符路径）；
+    # 前置边界排除 "Elements:\n" 这类字符串里的 "s:\n" 误报（前面是字母 t）。
+    drive = re.compile(r"(?:^|[\s\"'(\[{=,;])[A-Za-z]:[\\/](?![\\/])")
     hits = []
     for base in ("app", "sdk"):
         for p in (ROOT / base).rglob("*.py"):

@@ -530,8 +530,11 @@ class PyAutoGUIBackend(InputBackend):
                 except Exception:
                     pyautogui.write(text, interval=interval)
             else:
-                # 非 ASCII（中文/emoji）：pyautogui.write 不支持，走剪贴板粘贴
-                _paste_text(text)
+                # 非 ASCII（中文/emoji）：pyautogui.write 不支持。
+                # v0.15.1 实弹：Win11 记事本吞掉注入的 Ctrl+V（组合键在记事本
+                # 全灭）→ 先 KEYEVENTF_UNICODE 直送，失败才回落剪贴板粘贴。
+                if not _send_unicode_text(text):
+                    _paste_text(text)
         finally:
             release_all_modifiers()  # 键盘状态绝不泄漏到系统
 
@@ -622,6 +625,55 @@ def foreground_hwnd() -> Optional[int]:
     """当前前台窗口 hwnd；无则 None。"""
     hwnd = ctypes.windll.user32.GetForegroundWindow()
     return int(hwnd) if hwnd else None
+
+
+def _send_unicode_text(text: str) -> bool:
+    """KEYEVENTF_UNICODE 逐字符 SendInput：绕过 IME 与键盘布局，直接把
+    Unicode 码点作为 WM_CHAR 送进目标窗口。
+
+    实弹动机（2026-10-28 本地天气任务）：非 ASCII 走剪贴板 + Ctrl+V 时，
+    Win11 记事本把 SendInput 注入的 Ctrl 组合键整个吞掉（v0.6 已实证
+    Ctrl/Enter 注入在记事本全灭）——文本永远粘不进去；而本路径在记事本
+    实测可完整输入中文/℃。emoji 等辅助平面字符按 UTF-16 代理对拆分送出。
+    返回是否完整送出（SendInput 计数校验）；任何异常一律 False 走回落。"""
+    try:
+        import struct
+
+        n_units = len(text.encode("utf-16-le")) // 2
+        if n_units == 0:
+            return True
+        units = struct.unpack(f"{n_units}H", text.encode("utf-16-le"))
+
+        class KEYBDINPUT(ctypes.Structure):
+            _fields_ = (("wVk", ctypes.wintypes.WORD),
+                        ("wScan", ctypes.wintypes.WORD),
+                        ("dwFlags", ctypes.wintypes.DWORD),
+                        ("time", ctypes.wintypes.DWORD),
+                        ("dwExtraInfo", ctypes.c_size_t))
+
+        class INPUT(ctypes.Structure):
+            class _I(ctypes.Union):
+                _fields_ = (("ki", KEYBDINPUT),
+                            ("pad", ctypes.wintypes.BYTE * 32))
+
+            _fields_ = (("type", ctypes.wintypes.DWORD), ("ii", _I))
+
+        KEYEVENTF_KEYUP = 0x0002
+        KEYEVENTF_UNICODE = 0x0004
+        arr = (INPUT * (n_units * 2))()
+        for i, unit in enumerate(units):
+            for j, flags in enumerate((KEYEVENTF_UNICODE,
+                                       KEYEVENTF_UNICODE | KEYEVENTF_KEYUP)):
+                ev = arr[i * 2 + j]
+                ev.type = 1  # INPUT_KEYBOARD
+                ev.ii.ki.wVk = 0
+                ev.ii.ki.wScan = unit
+                ev.ii.ki.dwFlags = flags
+        sent = ctypes.windll.user32.SendInput(
+            n_units * 2, ctypes.byref(arr), ctypes.sizeof(INPUT))
+        return int(sent) == n_units * 2
+    except Exception:  # noqa: BLE001
+        return False
 
 
 def _paste_text(text: str) -> None:

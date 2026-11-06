@@ -574,10 +574,12 @@ def scenario_mcp(hwnd: int, base_title: str) -> None:
                 await s.initialize()
                 tools = await s.list_tools()
                 names = sorted(t.name for t in tools.tools)
-                check("4.1 MCP Tools 仍为 5 个（未破坏协议白名单）",
-                      names == ["analyze_screen", "click_element",
-                                "draw_trajectory", "execute_task",
-                                "type_text"], str(names))
+                # v0.16 起新增 canvas_info / sketch_from_image（共 7 个）；v0.12
+                # 的 5 个能力必须全部保留，只增不减才算未破坏协议白名单。
+                required = {"analyze_screen", "click_element",
+                            "draw_trajectory", "execute_task", "type_text"}
+                check("4.1 MCP Tools 保留 v0.12 白名单 5 个（允许新增）",
+                      required.issubset(set(names)), str(names))
                 force_foreground(hwnd)
                 clk = tool_body(await s.call_tool("click_element", {
                     "text": "保存成功", "window": base_title}))

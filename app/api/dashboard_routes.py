@@ -38,6 +38,8 @@ async def dashboard_state() -> Dict[str, Any]:
         "frozen_reason": task_queue.frozen_reason(),
         "queue_depth": task_queue.depth(),
         "running": task_queue.running_view(),
+        "running_tasks": task_queue.running_views(),
+        "running_count": task_queue.running_count(),
         "queued": task_queue.snapshot(),
     }
 

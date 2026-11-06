@@ -1,10 +1,12 @@
-"""任务级 FIFO 队列调度器（v0.5 平台化）：多 Agent 排队 + 串行执行 + 紧急冻结。
+"""任务级 FIFO 队列调度器（v0.5 平台化 → v0.17 并发工作池）：多 Agent 排队 + 并发执行 + 紧急冻结。
 
 与 task_runner 的分工：
 - task_runner 管单个任务的状态机与步骤执行（_execute）；
-- task_queue 管"同一时刻哪个任务上桌面"：单调度线程按入队顺序串行派发，
-  正在跑的任务独占执行权，后续任务在队列里等待（controller.ACTION_LOCK
-  仍是底层兜底，直接调 /execute_action 的零散动作不经过本队列）。
+- task_queue 管"同一时刻哪些任务上桌面"：v0.17 起是固定大小工作池
+  （GHOST_MAX_CONCURRENT_TASKS，默认 4），按入队顺序取任务并发执行。
+  真正能否并行由 controller 的细粒度窗口锁决定：不同 hwnd 的 virtual 动作
+  完全并行；同一 hwnd 的动作自动串行；physical 通道仍受全局物理锁约束
+  （全系统只有一套鼠标键盘，这是 OS 事实）。
 
 隔离语义（X-Agent-Id，路由层落实）：
 - 任务创建时记录归属 agent；跨 Agent 带不同 id 访问 → 403 AGENT_FORBIDDEN；
@@ -12,7 +14,7 @@
 
 紧急冻结（emergency stop）：
 - freeze()：清空队列（排队任务一律 canceled + EMERGENCY_STOP）并置冻结位，
-  正在跑的任务置 cancel_event，在下一个步骤边界安全点落 canceled；
+  所有运行中任务置 cancel_event，在下一个步骤边界安全点落 canceled；
 - 冻结期间 start/resume/execute_action/宏重放一律 503 GHOST_FROZEN；
 - release() 解冻，队列恢复派发。
 
@@ -27,19 +29,19 @@ from collections import deque
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
-from . import authz
+from . import authz, config
 
 LOG = logging.getLogger("moray-ghost.task_queue")
 
 _queue: deque = deque()             # 待派发 TaskRun（FIFO；对象直存，免注册表查询）
 _qlock = threading.Lock()
-_wake = threading.Event()           # enqueue 唤醒调度线程
+_wake = threading.Event()           # enqueue 唤醒工作线程
 _stop = threading.Event()
 _frozen = threading.Event()
 _frozen_at: Optional[str] = None
 _frozen_reason: Optional[str] = None   # v0.7.2：emergency_stop / rate_circuit_break / action_hard_timeout
-_running_task: Optional[Any] = None  # 正在执行的 TaskRun（冻结时对其置 cancel_event）
-_thread: Optional[threading.Thread] = None
+_running: Dict[str, Any] = {}        # v0.17：并发运行中的 TaskRun（task_id → task）
+_workers: List[threading.Thread] = []
 
 
 def _now() -> str:
@@ -79,14 +81,28 @@ def depth() -> int:
         return len(_queue)
 
 
-def running_view() -> Optional[Dict[str, Any]]:
-    """正在执行任务的摘要（dashboard / state 用）。"""
-    task = _running_task
-    if task is None:
-        return None
+def _view_of(task: Any) -> Dict[str, Any]:
     view = task.view()
     return {k: view[k] for k in ("task_id", "agent_id", "goal", "status",
                                  "steps_total", "current_step_id", "started_at")}
+
+
+def running_views() -> List[Dict[str, Any]]:
+    """所有正在执行任务的摘要（v0.17 并发工作池；dashboard / state 用）。"""
+    with _qlock:
+        tasks = list(_running.values())
+    return [_view_of(t) for t in tasks]
+
+
+def running_view() -> Optional[Dict[str, Any]]:
+    """正在执行任务的摘要（向后兼容单任务视图：取第一个）。"""
+    views = running_views()
+    return views[0] if views else None
+
+
+def running_count() -> int:
+    with _qlock:
+        return len(_running)
 
 
 def snapshot() -> List[Dict[str, Any]]:
@@ -121,14 +137,14 @@ class FrozenError(Exception):
 
 
 def freeze(reason: str = "emergency_stop") -> Dict[str, Any]:
-    """紧急停止：清空队列 + 冻结 + 请求运行中任务在步骤边界停止。"""
+    """紧急停止：清空队列 + 冻结 + 请求所有运行中任务在步骤边界停止。"""
     global _frozen_at, _frozen_reason
     canceled: List[str] = []
     with _qlock:
+        _frozen.set()
         pending = list(_queue)
         _queue.clear()
-        running = _running_task
-    _frozen.set()
+        running = list(_running.values())
     _frozen_at = _now()
     _frozen_reason = str(reason)
     for task in pending:
@@ -140,13 +156,14 @@ def freeze(reason: str = "emergency_stop") -> Dict[str, Any]:
                 task.fail = {"fail_class": "EMERGENCY_STOP",
                              "detail": "task removed from queue by emergency stop"}
                 canceled.append(task.task_id)
-    if running is not None:
-        running.cancel_event.set()  # 步骤边界安全点自行落 canceled，绝不切断进行中输入
-    LOG.warning("EMERGENCY STOP (%s): queue cleared=%d canceled=%s running=%s",
-                reason, len(pending), canceled,
-                running.task_id if running is not None else None)
+    for task in running:
+        task.cancel_event.set()  # 步骤边界安全点自行落 canceled，绝不切断进行中输入
+    LOG.warning("EMERGENCY STOP (%s): queue cleared=%d canceled=%s running=%d %s",
+                reason, len(pending), canceled, len(running),
+                [getattr(t, "task_id", "?") for t in running])
     return {"frozen": True, "frozen_at": _frozen_at, "reason": reason,
-            "canceled_tasks": canceled, "queue_cleared": len(pending)}
+            "canceled_tasks": canceled, "queue_cleared": len(pending),
+            "running_cancel_requested": len(running)}
 
 
 def release() -> None:
@@ -162,14 +179,18 @@ def release() -> None:
 
 
 def start_dispatcher() -> None:
-    global _thread
-    if _thread is not None and _thread.is_alive():
+    global _workers
+    if any(w.is_alive() for w in _workers):
         return
     _stop.clear()
-    _thread = threading.Thread(target=_dispatch_loop, name="task-dispatcher",
-                               daemon=True)
-    _thread.start()
-    LOG.info("task dispatcher started (fifo, single-worker)")
+    n = max(1, int(config.MAX_CONCURRENT_TASKS))
+    _workers = [threading.Thread(target=_worker_loop,
+                                 name="task-worker-" + str(i + 1),
+                                 daemon=True)
+                for i in range(n)]
+    for worker in _workers:
+        worker.start()
+    LOG.info("task dispatcher started (fifo, %d concurrent workers)", n)
 
 
 def stop_dispatcher() -> None:
@@ -178,8 +199,14 @@ def stop_dispatcher() -> None:
 
 
 def _take_next() -> Optional[Any]:
-    """取队首可派发任务并原子完成 queued→running 迁移（与 cancel/freeze 互斥）。"""
+    """取队首可派发任务并原子完成 queued→running 迁移（与 cancel/freeze 互斥）。
+
+    v0.17：任务在拿到的一瞬间就登记进 _running（同一个 _qlock 内），
+    freeze() 因此不可能漏掉「已出队但还没登记」的窗口期。
+    """
     with _qlock:
+        if _frozen.is_set():
+            return None
         while _queue:
             task = _queue.popleft()
             with task.lock:
@@ -187,50 +214,47 @@ def _take_next() -> Optional[Any]:
                     task.status = "running"
                     if task.started_at is None:
                         task.started_at = _now()
+                    _running[task.task_id] = task
                     return task
                 # 已被 cancel/freeze 抢先落态：跳过脏条目
     return None
 
 
-def _dispatch_loop() -> None:
+def _worker_loop() -> None:
     from . import task_runner  # 延迟 import：task_runner 顶层 import 本模块，避免环
 
-    global _running_task
     while not _stop.is_set():
-        _wake.wait(0.5)
-        _wake.clear()
-        while not _stop.is_set():
-            if _frozen.is_set():
-                break  # 冻结期不派发；release() 会再次唤醒
-            task = _take_next()
-            if task is None:
-                break
-            _running_task = task
-            # v0.7.1：回放任务准入身份（哪个请求/ token 启动了本任务）——
-            # 生产环境输入源过滤与步骤审计都读它；派发前后显式覆盖/清空，
-            # 绝不让上一个任务的身份串进下一个。
-            authz.set_ctx({**(getattr(task, "admission", None) or {}),
-                           "source": "task_queue"})
+        task = _take_next()
+        if task is None:
+            _wake.wait(0.3)
+            _wake.clear()
+            continue
+        # v0.7.1：回放任务准入身份（哪个请求/ token 启动了本任务）——
+        # 生产环境输入源过滤与步骤审计都读它；派发前后显式覆盖/清空，
+        # 绝不让上一个任务的身份串进下一个。
+        authz.set_ctx({**(getattr(task, "admission", None) or {}),
+                       "source": "task_queue"})
+        try:
+            # 派发时环境门禁复检（start 到派发之间可能锁屏）：
+            # 不可输入 → degraded 挂起，主环境恢复后 resume 重排队
             try:
-                # 派发时环境门禁复检（start 到派发之间可能锁屏）：
-                # 不可输入 → degraded 挂起，主环境恢复后 resume 重排队
-                try:
-                    task_runner.environment.assert_input_allowed()
-                except task_runner.environment.SystemNotReadable as exc:
-                    with task.lock:
-                        task.status = "degraded"
-                        task.fail = {"fail_class": "SYSTEM_NOT_READABLE",
-                                     "detail": exc.detail}
-                    LOG.warning("task %s degraded at dispatch: %s",
-                                task.task_id, exc.detail)
-                    continue
-                LOG.info("dispatch task %s agent=%s steps=%d",
-                         task.task_id, getattr(task, "agent_id", None),
-                         len(task.steps))
-                task_runner._execute(task)
-            except Exception as exc:  # noqa: BLE001  调度线程绝不能死
-                LOG.exception("dispatcher error on task %s: %s",
-                              getattr(task, "task_id", "?"), exc)
-            finally:
-                _running_task = None
-                authz.set_ctx(None)  # 身份不跨任务残留
+                task_runner.environment.assert_input_allowed()
+            except task_runner.environment.SystemNotReadable as exc:
+                with task.lock:
+                    task.status = "degraded"
+                    task.fail = {"fail_class": "SYSTEM_NOT_READABLE",
+                                 "detail": exc.detail}
+                LOG.warning("task %s degraded at dispatch: %s",
+                            task.task_id, exc.detail)
+                continue
+            LOG.info("dispatch task %s agent=%s steps=%d worker=%s",
+                     task.task_id, getattr(task, "agent_id", None),
+                     len(task.steps), threading.current_thread().name)
+            task_runner._execute(task)
+        except Exception as exc:  # noqa: BLE001  工作线程绝不能死
+            LOG.exception("worker error on task %s: %s",
+                          getattr(task, "task_id", "?"), exc)
+        finally:
+            with _qlock:
+                _running.pop(getattr(task, "task_id", ""), None)
+            authz.set_ctx(None)  # 身份不跨任务残留

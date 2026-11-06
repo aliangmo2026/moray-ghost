@@ -268,10 +268,12 @@ def contract_checks() -> None:
           r.get("ok") is True and isinstance(sent, int) and sent >= 3,
           f"sent={sent} status={r.get('http_status')}")
     traj = ((r.get("result") or {}).get("trajectory")) or []
-    check("B7 drag 轨迹回显与 stroke 一致",
-          len(traj) == sent and r.get("window", {}).get("process")
-          == "python.exe",
-          f"traj={len(traj)} proc={r.get('window', {}).get('process')}")
+    # v0.16 极简响应：不再回传 result 全量，轨迹回显改为 points_count 断言
+    check("B7 drag 轨迹回显与 stroke 一致（v0.16 极简契约）",
+          r.get("points_count") == sent
+          and r.get("window", {}).get("process") == "python.exe",
+          f"points_count={r.get('points_count')} "
+          f"proc={r.get('window', {}).get('process')}")
 
     r = post({"points": [[200, 300], [350, 250], [500, 320]],
               "color": "blue", "color_required": True, "hwnd": hwnd,

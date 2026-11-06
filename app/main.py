@@ -176,9 +176,11 @@ _OPEN_PATHS = {"/health", "/screenshot", "/docs", "/redoc", "/openapi.json", "/f
 
 
 _GHOST_PREFIX = "/api/ghost"
-# 探活/监控放行：health、screenshot（v0.2 起）与 dashboard 只读状态（v0.5）、
+# 探活/监控放行：health、screenshot（v0.2 起）、screenshot/thumb（v0.16，
+# 与 /screenshot 同级：本机只读、信息量严格更小）与 dashboard 只读状态（v0.5）、
 # 驾驶舱动作日志与缩略图（v0.6 M3，与 /screenshot 同级：本机只读、信息量相当）
 _OPEN_PATHS = {_GHOST_PREFIX + "/health", _GHOST_PREFIX + "/screenshot",
+               _GHOST_PREFIX + "/screenshot/thumb",
                _GHOST_PREFIX + "/dashboard/state",
                _GHOST_PREFIX + "/actions/recent"}
 _THUMB_PREFIX = _GHOST_PREFIX + "/actions/thumb/"

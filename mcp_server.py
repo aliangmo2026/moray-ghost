@@ -115,11 +115,18 @@ mcp = MCPServer(
         "CDP; dangerous labels return PENDING_APPROVAL and can only be approved "
         "by a human console (agents never hold the approval token); type_text "
         "types into a window (focus it first via click_element); "
-        "draw_trajectory draws a smooth mouse stroke (optionally picking a "
-        "palette color first); execute_task runs a queued task. "
+        "draw_trajectory draws smooth mouse strokes (multi-subpath pen-up, "
+        "local geometric primitives, brush width, corner preservation, "
+        "dry-run canvas preview - minimal token responses); "
+        "sketch_from_image replicates a local image on a drawing canvas "
+        "from just the file path (Canny/K-Means planning happens locally); "
+        "canvas_info reports the physical canvas bounds; "
+        "execute_task runs a queued task. "
         "Resources: screen://current is a live screenshot of the primary "
-        "monitor and ui://elements is the current numbered GUI RAG element "
-        "table (physical-pixel bboxes) - reading them lets the client see "
+        "monitor, screen://thumb is a cheap 256px thumbnail (use it to "
+        "check drawing results without token explosion) and ui://elements "
+        "is the current numbered GUI RAG element table (physical-pixel "
+        "bboxes) - reading them lets the client see "
         "the environment without calling a tool. "
         "Identity/capabilities come from the spawn environment "
         "(GHOST_TOKEN / GHOST_AGENT_ID / GHOST_CAPABILITIES) and are enforced "
@@ -321,23 +328,46 @@ def execute_task(task_payload: Dict[str, Any], wait: bool = True,
 
 
 @mcp.tool()
-def draw_trajectory(points: List[List[float]], color: Optional[str] = None,
+def draw_trajectory(points: Optional[List[List[float]]] = None,
+                    subpaths: Optional[List[List[List[float]]]] = None,
+                    primitives: Optional[List[Dict[str, Any]]] = None,
+                    color: Optional[str] = None,
                     hwnd: Optional[int] = None, window: Optional[str] = None,
                     duration_ms: int = 800, smooth_iterations: int = 2,
-                    closed: bool = False,
-                    color_required: bool = False) -> Dict[str, Any]:
-    """画一条平滑鼠标轨迹（纯鼠标绘制底层：Chaikin 平滑 + 降采样 + 真实鼠标事件）。
+                    closed: bool = False, color_required: bool = False,
+                    brush_width: Optional[int] = None,
+                    preserve_corners: Optional[List[Any]] = None,
+                    dry_run: bool = False) -> Dict[str, Any]:
+    """画平滑鼠标轨迹（v0.16 工业级：多段抬笔 / 几何原语 / 笔宽 / 尖角保留 / 画布预演）。
 
-    points 为物理像素 [[x,y],...]（≥2 点，服务端平滑降采样到 ≤2000 点）。
-    color（可选）先在目标窗口色板区找实心纯色色板点并点击（名称或 #RRGGBB；
-    找不到且 color_required=true → 404，否则用当前色 fallback）。落笔走
-    drag 的全套安全管道（归属门禁/Fail-Safe/硬超时/审计）。closed=true 会
-    画闭合曲线（注意：画图软件会把闭合笔迹并成闭合形状）。
+    三种轨迹输入（至少其一，points 与 subpaths 互斥）：
+    - points: 物理像素 [[x,y],...]（服务端平滑降采样 ≤2000 点）；
+    - subpaths: [[[x1,y1],[x2,y2]],[[x3,y3],...]] 多段——每段画完自动抬笔
+      移到下一段起点再落笔，段间绝不连线；
+    - primitives: 几何原语 [{"type":"circle","center":[0.5,0.5],"radius":0.2}]
+      （circle/ellipse/arc/line/rect/polygon/bezier，frac 坐标相对画布，
+      Ghost 本地展开，模型不算三角函数）。
+    color（可选）先在目标窗口色板区点击取色（名称或 #RRGGBB）；brush_width
+    （可选）先调画图笔宽；preserve_corners 为 Chaikin 保留尖角的下标数组。
+    dry_run=true 只做安全预演（画布越界/工具栏警告），不碰鼠标。
+    响应为极简元数据（ok/bbox/points_count/elapsed_ms，无截图）；
+    需要看画面读资源 screen://thumb（256px 缩略图）。
     """
     payload: Dict[str, Any] = {
-        "points": points, "duration_ms": int(duration_ms),
+        "duration_ms": int(duration_ms),
         "smooth_iterations": int(smooth_iterations), "closed": bool(closed),
-        "color_required": bool(color_required)}
+        "color_required": bool(color_required),
+        "dry_run": bool(dry_run), **_caps_field()}
+    if points is not None:
+        payload["points"] = points
+    if subpaths is not None:
+        payload["subpaths"] = subpaths
+    if primitives is not None:
+        payload["primitives"] = primitives
+    if preserve_corners is not None:
+        payload["preserve_corners"] = preserve_corners
+    if brush_width is not None:
+        payload["brush_width"] = int(brush_width)
     if color:
         payload["color"] = str(color)
     if hwnd is not None:
@@ -345,6 +375,52 @@ def draw_trajectory(points: List[List[float]], color: Optional[str] = None,
     if window:
         payload["window"] = str(window)
     return _post("/draw_trajectory", payload, timeout=120)
+
+
+@mcp.tool()
+def sketch_from_image(image_path: str, mode: str = "line",
+                      hwnd: Optional[int] = None,
+                      window: Optional[str] = None,
+                      color: Optional[str] = None, k: int = 6,
+                      max_strokes: int = 80, dry_run: bool = False
+                      ) -> Dict[str, Any]:
+    """图像自动复刻（终极杀招）：传一张本地图片路径，Ghost 亲自一笔一画画出来。
+
+    mode="line"：Canny 边缘 → 轮廓 → Douglas-Peucker 极简 → 线稿复刻；
+    mode="color"：K-Means 颜色聚类量化 → 逐色域轮廓 → 自动点色板取色
+    （聚类色就近映射画图调色板；找不到色板的色组跳过并告警）。
+    大模型不传任何坐标——服务端本地完成全部 CV 规划并经安全管道落笔。
+    dry_run=true 只返回复刻计划（轮廓数/点数/画布适配/警告）不落笔。
+    目标窗口需有浅色画布（如画图）；响应为极简元数据，无截图。
+    """
+    payload: Dict[str, Any] = {
+        "image_path": str(image_path), "mode": str(mode),
+        "k": int(k), "max_strokes": int(max_strokes),
+        "dry_run": bool(dry_run), **_caps_field()}
+    if color:
+        payload["color"] = str(color)
+    if hwnd is not None:
+        payload["hwnd"] = int(hwnd)
+    if window:
+        payload["window"] = str(window)
+    return _post("/draw/sketch_from_image", payload, timeout=600)
+
+
+@mcp.tool()
+def canvas_info(hwnd: Optional[int] = None,
+                window: Optional[str] = None) -> Dict[str, Any]:
+    """探测画纸物理边界（只读，不产生输入、无需能力令牌）。
+
+    返回画布矩形（物理像素）/ 检测来源（detected=CV 命中画纸，fallback=
+    窗口内缩兜底）/ 工具栏条带——画轨迹前先探测，配合 draw_trajectory
+    的 dry_run 可以在落笔前确认整条轨迹都在纸内。
+    """
+    payload: Dict[str, Any] = {}
+    if hwnd is not None:
+        payload["hwnd"] = int(hwnd)
+    if window:
+        payload["window"] = str(window)
+    return _post("/draw/canvas_info", payload, timeout=60)
 
 
 # ---- MCP Resources（v0.14）：把 Ghost 的"所见"暴露成协议级资源 ------------
@@ -382,6 +458,30 @@ def resource_screen_current() -> bytes:
                 f"&scale={scale}", timeout=30)
     if not body.get("ok"):
         raise RuntimeError("screen://current unavailable: "
+                           + str(body.get("error")) + ": "
+                           + str(body.get("detail"))[:200])
+    return base64.b64decode(body["image_b64"])
+
+
+@mcp.resource(
+    "screen://thumb",
+    name="Screen Thumbnail",
+    title="256px screen thumbnail",
+    description="Ultra-cheap 256px JPEG thumbnail of the primary monitor "
+                "(base64 on the wire, ~4-8KB). Use this to visually check "
+                "draw_trajectory / sketch_from_image results without "
+                "pulling a full-resolution screenshot - draw endpoints "
+                "return metadata only by design.",
+    mime_type="image/jpeg",
+)
+def resource_screen_thumb() -> bytes:
+    """256px 低成本缩略图（服务端 /screenshot/thumb → blob）。"""
+    import base64
+
+    body = _get("/screenshot/thumb?monitor=1&fmt=jpeg&quality=60",
+                timeout=30)
+    if not body.get("ok"):
+        raise RuntimeError("screen://thumb unavailable: "
                            + str(body.get("error")) + ": "
                            + str(body.get("detail"))[:200])
     return base64.b64decode(body["image_b64"])

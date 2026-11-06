@@ -17,7 +17,7 @@ ENV_PATH = BASE_DIR / ".env"
 load_dotenv(ENV_PATH)
 
 SERVICE = "moray-ghost"
-VERSION = "0.15.0"
+VERSION = "0.17.0"
 
 HOST = os.getenv("GHOST_HOST", "127.0.0.1")
 PORT = int(os.getenv("GHOST_PORT", "8030"))
@@ -72,6 +72,49 @@ SKILL_MAX_EVENTS = int(os.getenv("GHOST_SKILL_MAX_EVENTS", "2000"))
 SKILL_SHOT_MIN_INTERVAL = float(os.getenv("GHOST_SKILL_SHOT_INTERVAL", "0.6"))
 # VLM 语义标注最多调用次数（每次 ~3s GPU；模型不可用时零调用，诚实降级）。
 SKILL_ANNOTATE_MAX_CALLS = int(os.getenv("GHOST_SKILL_ANNOTATE_CALLS", "6"))
+
+# ---- v0.17 并发调度与虚拟输入通道 ------------------------------------------
+# 虚拟通道总开关：false 时 channel="virtual" 一律 400 VIRTUAL_UNSUPPORTED
+# （physical 完全不受影响）。
+VIRTUAL_INPUT_ENABLED = os.getenv("GHOST_VIRTUAL_INPUT", "true").strip().lower() \
+    in ("1", "true", "yes", "on")
+# 虚拟投递后无可观测变化时，是否自动降级 physical（带审计标签）。
+VIRTUAL_FALLBACK = os.getenv("GHOST_VIRTUAL_FALLBACK", "true").strip().lower() \
+    in ("1", "true", "yes", "on")
+# 是否做可观测性校验（关掉=投递即成功，仅用于调试；默认必须开）。
+VIRTUAL_VERIFY = os.getenv("GHOST_VIRTUAL_VERIFY", "true").strip().lower() \
+    in ("1", "true", "yes", "on")
+# 校验窗口：投递后最多轮询多久、间隔多久找变化。
+VIRTUAL_VERIFY_TIMEOUT = float(os.getenv("GHOST_VIRTUAL_VERIFY_TIMEOUT", "0.9"))
+VIRTUAL_VERIFY_INTERVAL = float(os.getenv("GHOST_VIRTUAL_VERIFY_INTERVAL", "0.08"))
+# 验证截图最长边（用户要求 128px 级低分辨率：快、够用、不抢带宽）。
+VIRTUAL_VERIFY_MAX_SIDE = int(os.getenv("GHOST_VIRTUAL_VERIFY_MAX_SIDE", "128"))
+# 像素差异阈值：单像素差 > tol 才算变化；命中任一判据即 verified。
+VIRTUAL_VERIFY_PIXEL_TOL = int(os.getenv("GHOST_VIRTUAL_VERIFY_PIXEL_TOL", "12"))
+VIRTUAL_VERIFY_MIN_RATIO = float(
+    os.getenv("GHOST_VIRTUAL_VERIFY_MIN_RATIO", "0.0008"))
+VIRTUAL_VERIFY_MIN_CHANGED_PX = int(
+    os.getenv("GHOST_VIRTUAL_VERIFY_MIN_CHANGED_PX", "12"))
+VIRTUAL_VERIFY_MIN_MEAN = float(
+    os.getenv("GHOST_VIRTUAL_VERIFY_MIN_MEAN", "0.35"))
+# 自动降级时等待物理输入锁的上限（秒）；拿不到就明确 408，绝不无限排队。
+VIRTUAL_FALLBACK_LOCK_TIMEOUT = float(
+    os.getenv("GHOST_VIRTUAL_FALLBACK_LOCK_TIMEOUT", "2.0"))
+# 第二层虚拟通道（实验性）：合成笔注入。v0.17 实弹结论——Win11 新版画图
+# （WinUI 内容岛）只偶尔接收合成笔，4 笔仅 1 笔落墨，无法作为稳定通道；
+# 默认关闭，避免「偶尔画一半 + 再降级 physical」造成重复输入。
+# 仅在确认目标应用稳定支持时通过 GHOST_VIRTUAL_POINTER=true 开启。
+VIRTUAL_POINTER_ENABLED = os.getenv(
+    "GHOST_VIRTUAL_POINTER", "false").strip().lower() in ("1", "true", "yes", "on")
+VIRTUAL_POINTER_RESTORE_FOCUS = os.getenv(
+    "GHOST_VIRTUAL_RESTORE_FOCUS", "true").strip().lower() \
+    in ("1", "true", "yes", "on")
+# 虚拟打字逐字符间隔（毫秒）；0 = 全速投递（消息队列天然有序）。
+VIRTUAL_TYPE_INTERVAL_MS = float(
+    os.getenv("GHOST_VIRTUAL_TYPE_INTERVAL_MS", "0"))
+# 任务工作池大小（v0.17）：不同窗口的 virtual 动作可并行；同窗口由窗口锁
+# 自动串行，physical 仍受全局物理锁约束。1 = 退回 v0.16 串行行为。
+MAX_CONCURRENT_TASKS = int(os.getenv("GHOST_MAX_CONCURRENT_TASKS", "4"))
 
 # ---- v0.8.0 MCP 多模态感知（VL Driver） ------------------------------------
 

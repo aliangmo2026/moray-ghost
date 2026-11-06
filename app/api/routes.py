@@ -16,11 +16,14 @@ from PIL import Image
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.core import backend, controller, macro_matcher, macro_recorder
-from app.core import action_log, authz, environment, screen_mss, task_queue
+from app.core import action_locks, action_log, authz, environment, screen_mss
+from app.core import task_queue, virtual_input
 from app.core import vl_driver, window_locator
-from app.core.config import (DB_PATH, JPEG_QUALITY, SERVICE, VERSION,
-                             VL_BACKEND, VL_MODEL_PATH, VL_MMPROJ_PATH,
-                             VL_PROFILE)
+from app.core.config import (DB_PATH, JPEG_QUALITY, MAX_CONCURRENT_TASKS,
+                             SERVICE, VERSION, VIRTUAL_FALLBACK,
+                             VIRTUAL_INPUT_ENABLED, VIRTUAL_POINTER_ENABLED,
+                             VIRTUAL_VERIFY, VL_BACKEND, VL_MODEL_PATH,
+                             VL_MMPROJ_PATH, VL_PROFILE)
 
 LOG = logging.getLogger("moray-ghost.routes")
 
@@ -55,6 +58,14 @@ async def health() -> Dict[str, Any]:
         "db_path": str(DB_PATH),
         "frozen": task_queue.is_frozen(),
         "frozen_reason": task_queue.frozen_reason(),
+        # v0.17：虚拟通道能力 + 细粒度锁调度观测
+        "virtual_input": {**virtual_input.describe(),
+                          "enabled": VIRTUAL_INPUT_ENABLED,
+                          "fallback": VIRTUAL_FALLBACK,
+                          "verify": VIRTUAL_VERIFY,
+                          "pointer_enabled": VIRTUAL_POINTER_ENABLED},
+        "action_locks": action_locks.snapshot(),
+        "task_workers": MAX_CONCURRENT_TASKS,
         **vl_driver.guard_status(),
     }
 
@@ -119,6 +130,48 @@ def screenshot(
     return body
 
 
+THUMB_SIDE_PX = 256  # v0.16 缩略图最长边：低成本"看一眼"，替代 draw 响应回传全屏图
+
+
+@router.get("/screenshot/thumb")
+def screenshot_thumb(
+    monitor: int = Query(default=1, ge=0),
+    fmt: str = Query(default="jpeg", pattern="^(png|jpeg)$"),
+    quality: int = Query(default=60, ge=10, le=95),
+) -> Dict[str, Any]:
+    """v0.16 极简感知端点：最长边 256px 的超低分辨率缩略图（base64）。
+
+    draw_trajectory / sketch_from_image 默认不再回传全屏截图（一次 ~90KB
+    ≈ 2.5 万 token 的灾难根因）；模型需要"看一眼"画布效果时按需调本端点，
+    单次 ~4-8KB。响应只含缩略图元数据，绝不附全尺寸图。
+    """
+    t0 = time.perf_counter()
+    all_mons = screen_mss.monitors()
+    if monitor < 0 or monitor > len(all_mons) - 1:
+        return _bad_request(f"monitor index out of range: {monitor} "
+                            f"(0..{len(all_mons) - 1})")
+    img, origin = screen_mss.grab(monitor)
+    side = max(img.width, img.height)
+    scale = min(1.0, THUMB_SIDE_PX / float(side))
+    data = screen_mss.encode(img, fmt, quality, scale)
+    tw = max(1, round(img.width * scale))
+    th = max(1, round(img.height * scale))
+    return {
+        "ok": True,
+        "monitor": monitor,
+        "monitor_origin": [origin["left"], origin["top"]],
+        "original_width": img.width,
+        "original_height": img.height,
+        "width": tw,
+        "height": th,
+        "thumb_side_px": max(tw, th),
+        "format": fmt,
+        "bytes": len(data),
+        "image_b64": base64.b64encode(data).decode("ascii"),
+        "elapsed_ms": int((time.perf_counter() - t0) * 1000),
+    }
+
+
 class ExecuteRequest(BaseModel):
     model_config = ConfigDict(extra="allow")  # 主仓多传的字段直接忽略，绝不 422
 
@@ -149,6 +202,15 @@ class ExecuteRequest(BaseModel):
     source_height: Optional[int] = None
     # 录制提示：录制会话期间作为步骤的 hwnd（缺省用动作发生时的前台窗口）
     hwnd: Optional[int] = None
+    # v0.17 输入通道：physical（默认，真实鼠标键盘）| virtual（PostMessage，
+    # 不移动物理鼠标、不抢前台；必须有 hwnd）。virtual 支持 click 系/type/
+    # drag/scroll；move/hotkey 不支持（400 VIRTUAL_UNSUPPORTED）。
+    channel: str = Field(default="physical", pattern="^(physical|virtual)$",
+                         description="physical | virtual")
+    # virtual 投递后无可观测变化时是否自动降级 physical（缺省读配置，默认 true）
+    virtual_fallback: Optional[bool] = None
+    # 是否做 128px 像素/WM_GETTEXT 可观测性校验（缺省 true；调试可关）
+    verify: Optional[bool] = None
 
 
 @router.post("/execute_action")

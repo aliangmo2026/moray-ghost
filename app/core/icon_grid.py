@@ -9,15 +9,18 @@
 """
 from __future__ import annotations
 
+import os
 from typing import Any, Dict, List, Tuple
 
 import cv2
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
-_FONT_CANDIDATES = (
-    r"C:\Windows\Fonts\segoeui.ttf",
-    r"C:\Windows\Fonts\arial.ttf",
+# 开源标准（v0.7.1 E-1）：源码里不写盘符绝对路径；Windows 目录从环境读取。
+_WINDIR = os.environ.get("WINDIR") or os.environ.get("SystemRoot") or ""
+_FONT_CANDIDATES = tuple(
+    os.path.join(_WINDIR, "Fonts", name)
+    for name in ("segoeui.ttf", "arial.ttf")
 )
 
 

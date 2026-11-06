@@ -1,14 +1,14 @@
 # moray-ghost
 
-![version](https://img.shields.io/badge/version-0.15.0-blue)
+![version](https://img.shields.io/badge/version-0.17.0-blue)
 ![python](https://img.shields.io/badge/python-3.12.2-3776AB?logo=python&logoColor=white)
 ![platform](https://img.shields.io/badge/platform-Windows%2010%20%2F%2011-0078D6)
-![regression](https://img.shields.io/badge/regression-460%2B%20checks%20passed-brightgreen)
+![regression](https://img.shields.io/badge/regression-500%2B%20checks%20passed-brightgreen)
 ![audit](https://img.shields.io/badge/audit-JSONL%20%2B%20token%20fingerprint-lightgrey)
 
-Windows 桌面自动化本地服务（v0.15.0）：**mss 极速截图 + 授权式 pyautogui 动作 + 宏录制/安全重放 + 任务生命周期 + 环境感知 + 视觉反哺 Heal + 多 Agent 任务队列 + Web 监控面板 + 官方 Python SDK + MCP Server（Stdio，任意 AI Agent 即插即用，v0.14 起带 Resources 免工具看屏）+ 本地 VL 感知（rapidocr / llama-cpp CUDA GGUF，2B/7B 档位 + CV+VL 混合图标定位）+ GUI RAG（OCR+CV 编号元素表 → VLM 只回 target_id）+ Ghost Guard（点击前动态高危词门禁 → PENDING_APPROVAL / 人工审批令牌）+ 纯鼠标平滑绘制 draw_trajectory + v0.7 绝对防御 + v0.7.1 企业级安全 + v0.7.2 极限安全 + v0.14 多屏混合 DPI 坐标对齐与长时挂机保障 + v0.15 快慢双系统（System1 弹窗反射脑）/ 跨平台驱动抽象 app/platforms/ / 自我进化技能库（pynput 行为克隆 + VLM 语义标注）**。
+Windows 桌面自动化本地服务（v0.17.0）：**mss 极速截图 + 授权式 pyautogui 动作 + 宏录制/安全重放 + 任务生命周期 + 环境感知 + 视觉反哺 Heal + 多 Agent 任务队列 + Web 监控面板 + 官方 Python SDK + MCP Server（Stdio，任意 AI Agent 即插即用，v0.14 起带 Resources 免工具看屏）+ 本地 VL 感知（rapidocr / llama-cpp CUDA GGUF，2B/7B 档位 + CV+VL 混合图标定位）+ GUI RAG（OCR+CV 编号元素表 → VLM 只回 target_id）+ Ghost Guard（点击前动态高危词门禁 → PENDING_APPROVAL / 人工审批令牌）+ v0.17 并发调度与虚拟输入通道（按 hwnd 细粒度窗口锁 / 4 工作池并发任务 / channel=virtual 的 PostMessage 后台输入 + 128px 可观测性校验 + physical 自动降级审计 / physical 默认路径零改动）+ v0.16 工业级物理操控引擎（多段抬笔 subpaths / 几何原语 primitives / 笔宽 brush_width / 尖角保留 preserve_corners / 图像自动复刻 sketch_from_image / 画布感知 canvas_info / dry_run 安全预演 / 极简响应 + 256px 缩略图）+ v0.7 绝对防御 + v0.7.1 企业级安全 + v0.7.2 极限安全 + v0.14 多屏混合 DPI 坐标对齐与长时挂机保障 + v0.15 快慢双系统（System1 弹窗反射脑）/ 跨平台驱动抽象 app/platforms/ / 自我进化技能库（pynput 行为克隆 + VLM 语义标注）**。
 
-> 📜 **[致开源社区的公开信（中英双语）](docs/OPEN_LETTER.md)** · 📦 **[v0.15.0 Release Notes](docs/RELEASE_v0.15.0.md)**
+> 📜 **[致开源社区的公开信（中英双语）](docs/OPEN_LETTER.md)** · 📦 **[v0.15.0 Release Notes](docs/RELEASE_v0.15.0.md)** · 🚀 **[v0.17.0 Release Notes（并发调度与虚拟输入通道）](docs/RELEASE_v0.17.0.md)**
 
 只监听 `127.0.0.1:8030`；绝不触碰 `D:\MoRay`（主仓）。
 
@@ -174,6 +174,64 @@ Windows 桌面自动化本地服务（v0.15.0）：**mss 极速截图 + 授权�
 > **踩坑沉淀**：Edge 同步弹窗会盖住系统级录屏 → 浏览器 GIF 改用 CDP
 > 页面截图；`taskkill /T` 杀不到重挂载的 Edge 窗口宿主 → 以临时
 > `--user-data-dir` 指纹精确杀整棵树。
+>
+> **v0.17.0 并发调度与虚拟输入通道（从"全局串行单任务"到"多窗口集群 Agent 底座"）**：
+> ① **细粒度窗口锁**——`app/core/action_locks.py`：按 `hwnd` 维度建锁注册表（引用计数回收），
+> 不同窗口的动作可真正并行；同一窗口严格串行。`controller.ACTION_LOCK` 保留为**物理输入锁**
+> （全系统只有一套鼠标键盘，physical/CDP 仍持它），virtual 通道完全不碰。`/health` 回显
+> `action_locks`（active/峰值/超时/按 hwnd 持有）与 `task_workers`。
+> ② **任务工作池**——`task_queue` 从单调度线程升级为 `GHOST_MAX_CONCURRENT_TASKS`（默认 4）
+> 个工作线程；`running_view` 向后兼容，新增 `running_views`/`running_count`；冻结会取消所有
+> 运行中任务。**兼容开关**：`GHOST_MAX_CONCURRENT_TASKS=1` 完全恢复 v0.16 FIFO 串行语义
+> （v0.5 平台套件在该模式下 33/33）。
+> ③ **virtual 输入通道**——`/execute_action` 新增 `channel: physical | virtual`（默认 physical，
+> 旧调用零变化）。virtual 用 `PostMessageW` 直投目标 hwnd：`virtual_click`（含双击/右键）、
+> `virtual_type`（WM_CHAR，支持中文/emoji 代理对）、`virtual_drag`（WM_MOUSEMOVE+MK_LBUTTON）、
+> `virtual_scroll`（WM_MOUSEWHEEL）；**不移动物理鼠标、不抢前台、不碰剪贴板**。virtual 必须有
+> hwnd；type 不需要 x/y（也不再要求前台），move/hotkey 明确 400 `VIRTUAL_UNSUPPORTED`。
+> ④ **可观测性校验 + 自动降级**——执行后默认用 128px 窗口截图（PrintWindow，失败退 BitBlt）
+> 做像素比对，type 优先用 `WM_GETTEXT` 文本比对；基线先等画面稳定，避免"上一笔延迟渲染"被误判成
+> 本次成功。无可观测变化且 `virtual_fallback=true`（默认）→ 自动走 physical，结果带
+> `fallback_from_virtual=true` / `physical_pointer_used=true`，并写 `virtual_fallback` 审计事件；
+> fallback=false 则 **409 VIRTUAL_INPUT_UNVERIFIED**（零物理输入，绝不假装成功）。能力令牌 /
+> UAC FATAL / 窗口黑名单 / Ghost Guard / Fail-Safe / 硬超时 / 频率熔断在两条通道上一视同仁。
+> ⑤ **本机实弹结论（诚实边界）**——Win11 记事本 RichEditD2DPT 的 WM_CHAR 完全可用（WM_GETTEXT
+> 回读验证）；Win11 新版画图是 WinUI 内容岛，**忽略** PostMessage/SendMessage/WM_POINTER，虚拟
+> 拖拽会如实 409 或降级 physical；合成笔 `InjectSyntheticPointerInput` 在本机 4 笔仅 1 笔落墨，
+> 作为实验开关 `GHOST_VIRTUAL_POINTER=false` 默认关闭（绝不拿偶尔成功冒充 100%）。经典 Win32
+> 窗口（含自建画布）PostMessage 拖拽可真实后台落墨。**验收**：
+> `scripts/test_v17_concurrent_virtual.py` **42/42**（含 A 锁/任务池单元、B 契约、C1-C15 真机、
+> D 线程 A 记事本打字 + 线程 B 经典画布落墨 + 物理鼠标轨迹 141 采样零干扰）；回归
+> platforms 21/21、system1 47/47、skills 28/28、v14_dpi 20/20、v12_gui_rag 44/44、v0.5 平台
+> 33/33（单 worker 兼容模式）。
+>
+> **v0.17 实战数据（2026-11-06 本机实测，Windows 11 26200 / 2560×1600）**
+>
+> | 场景 | 实测结果 |
+> | --- | --- |
+> | 记事本 virtual type | 20 字符 → 20 条 WM_CHAR；WM_GETTEXT 第 1 次轮询命中；物理光标 0 位移 |
+> | 经典 Win32 画布 virtual drag | 30 点 → 29 段笔迹 + down/up 2 次；128px 像素校验通过；物理光标 0 位移 |
+> | Win11 画图 virtual drag（fallback=false） | 409 `VIRTUAL_INPUT_UNVERIFIED`；`changed_pixels=0`；物理光标 0 位移 |
+> | Win11 画图 virtual drag（默认 fallback） | `channel=physical` + `fallback_from_virtual=true` + `physical_pointer_used=true`；真实落墨；`virtual_fallback` 审计落盘 |
+> | 并发 4 打字 + 4 落墨 | 4.33s 完成；画布新增 116 段；物理鼠标 141 采样 0 偏离（≤4px）；`max_concurrent=2`；结束后 `held_by_hwnd={}` |
+> | 5 任务并发（breaker r3） | 4 个同时 running、第 5 个 queued；9.0s 全部 done；无 INTERNAL_ERROR |
+> | v0.16 FIFO 兼容 | `GHOST_MAX_CONCURRENT_TASKS=1` → v0.5 平台套件 33/33 |
+>
+> **v0.16.0 工业级物理操控引擎（把 Ghost 从"只能点按钮的脚本"升级为"数字机械臂"，复杂 CV 全本地、零大模型负担）**：
+> ① **切断 Token 浪费**——`draw_trajectory` / `sketch_from_image` 默认**绝不回传全屏截图**（旧版一次 ~90KB ≈ 2.5 万 token 的灾难根因），响应只含
+> `{ok, bbox, points_count, elapsed_ms}` 级元数据；新增 `GET /screenshot/thumb` 256px 缩略图（~4-8KB，免 token，与 /screenshot 同级只读放行）+
+> MCP 资源 `screen://thumb`，模型按需"看一眼"；`include_screenshot=true` 显式要回旧版全量响应（兼容契约）。
+> ② **赛博画笔**——drag 原生支持 `subpaths` 多段轨迹（画完一段**物理抬笔** mouse_up → 滑到下一段起点 → 落笔，段间绝不连线；逐段起终点归属门禁，
+> 单锁单审计）；`primitives` 几何原语（circle/ellipse/arc/line/rect/polygon/bezier，frac 坐标相对画布，Python 本地展开几百个平滑点——大模型不算
+> 三角函数）；`brush_width`（mspaint 经典版 OCR 定位"大小"下拉自动调档；2025 图标栏版无数字笔宽控件→**如实降级** reason_code，`brush_required=true` 409 拒绝，绝不假装"调好了"）；`preserve_corners`（Chaikin
+> 按角点切链平滑，眼睛/星角原样保尖）。
+> ③ **图像自动复刻引擎 `POST /draw/sketch_from_image`**——传一张本地图片路径即可：线稿模式 Canny 边缘 → 轮廓 → Douglas-Peucker 极简化；彩色
+> 模式 K-Means 聚类量化 → 逐色域轮廓 → 聚类色就近映射画图调色板 → 自动逐色点色板取色；contain 等比适配进真实画布 → 分块 drag 全门禁落笔——
+> 大模型连坐标都不用传。配套 `POST /draw/canvas_info`（CV 定位画纸物理边界，detected/fallback 如实标注）与 `dry_run` 安全预演（零输入返回
+> 越屏/越窗/越画布/工具栏重叠/Fail-Safe 角落警告）。
+> 复杂 CV 全部沉淀在 `app/core/`（geometry / canvas / sketch / brush），MCP/SDK 只透传；能力白名单 / 落点归属 / Fail-Safe / 硬超时 / 审计
+> 100% 生效。**验收**：`scripts/test_v16_industrial_draw.py`（A 单元 + B 契约 Tk 靶窗 + C 端到端自建画图：subpaths 段间走廊空白实证、圆环空心、
+> 顶点保尖、房子线稿复刻画布内落墨且工具栏零污染、双色 sketch 自动取色、brush OCR 调档）。
 >
 > **v0.15.0 AGI 物理躯体三大进化（快慢双系统 / 跨平台抽象 / 自我进化）**：
 > ① **System1 微型反射脑**——`require_vision` 挂起前，本地 OCR 规则库
@@ -400,12 +458,17 @@ HTTP 层   FastAPI @ 127.0.0.1:8030，全部接口挂 /api/ghost/ 前缀
 ### GET /health（免 token）
 
 ```json
-{"status":"ok","service":"moray-ghost","version":"0.15.0","fail_safe_enabled":true,
+{"status":"ok","service":"moray-ghost","version":"0.17.0","fail_safe_enabled":true,
  "token_required":true,"backends":{"screenshot":"mss","input":"pyautogui"},
  "monitors":[{"index":1,"left":0,"top":0,"width":2560,"height":1440,"primary":true}],
  "cursor":[x,y],"db_path":"...\\data\\ghost.db",
  "guard":{"enabled":true,"mode":"block","fail_closed":true,
           "approval_token_configured":false,"version":"v0.12"},
+ "virtual_input":{"available":true,"enabled":true,"fallback":true,"verify":true,
+                  "pointer_enabled":false,"synthetic_pointer":true},
+ "action_locks":{"policy":"fine_grained_window_lock","active_now":0,
+                 "max_concurrent":2,"held_by_hwnd":{},"held_global":0},
+ "task_workers":4,
  "rag":{"max_candidates":16,"min_conf":0.0,"image_mode":"auto","cache_seconds":2.0}}
 ```
 
@@ -452,6 +515,38 @@ query：`monitor=1|0|all`（0=全屏联合区，all=各屏数组）、`fmt=png|j
   payload 带 `approval_token` 且匹配 `GHOST_APPROVAL_TOKEN` 才放行；成功后
   响应带 `visual_guard.verdict=approved`。OCR 不可用且
   `GHOST_GUARD_FAIL_CLOSED=true` → 503 `VISUAL_GUARD_UNAVAILABLE`。
+
+**v0.17 虚拟输入通道（`channel=virtual`）**
+
+```json
+{"action":"type","text":"后台打字","hwnd":123456,"channel":"virtual",
+ "capabilities":{"allowed_windows":["notepad.exe"]}}
+```
+
+```json
+{"action":"drag","points":[[100,120],[180,150],[260,180]],
+ "hwnd":654321,"channel":"virtual","virtual_fallback":false,
+ "capabilities":{"allowed_windows":["mspaint.exe"]}}
+```
+
+- `channel`：`physical`（默认，真实鼠标键盘，零行为变化）| `virtual`
+  （PostMessage 直投 hwnd，不移动物理鼠标、不抢前台、不碰剪贴板）。
+- virtual 必须有 `hwnd`；`type` 不需要 x/y，也不要求目标在前台；支持
+  click/double_click/right_click/type/drag/scroll；move/hotkey →
+  400 `VIRTUAL_UNSUPPORTED`。
+- `virtual_fallback`：默认 true。virtual 投递后无可观测变化 → 自动 physical，
+  响应带 `channel:"physical"`、`fallback_from_virtual:true`、
+  `physical_pointer_used:true`，并写 `virtual_fallback` 审计事件。
+  false → 409 `VIRTUAL_INPUT_UNVERIFIED`（零物理输入）。
+- `verify`：默认 true。执行后用 128px 窗口截图/WM_GETTEXT 校验；
+  响应 `virtual` 字段含 `mode`（`postmessage`/`synthetic_pointer`）、
+  `messages_posted`、`verify`（`verified`/`method`/`changed_pixels`/`attempts`）。
+- 200 新增字段：`channel`、`physical_pointer_used`、`virtual`。
+- 本机实测：Win11 记事本（RichEditD2DPT）WM_CHAR 可用；Win11 新版画图是
+  WinUI 内容岛，忽略 PostMessage，虚拟拖拽会如实 409 或降级 physical。
+  实验性合成笔 `GHOST_VIRTUAL_POINTER=true` 可开启，默认关闭（不稳定）。
+- 宏录制/重放仍固定 physical（步骤不写 `channel`）；virtual 适用于直接
+  `/execute_action` 与任务 `kind:"action"` 步骤（payload 原样透传）。
 
 ### GUI RAG（v0.12，必须 `X-Ghost-Token`）
 

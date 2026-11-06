@@ -209,6 +209,19 @@ class ActionAPI(_Namespace):
             out["image_bytes"] = base64.b64decode(out["image_b64"])
         return out
 
+    def thumb(self, monitor: int = 1, fmt: str = "jpeg",
+              quality: int = 60) -> Dict[str, Any]:
+        """v0.16 极简感知：最长边 256px 的缩略图（~4-8KB，附 ``image_bytes``）。
+
+        draw_trajectory / sketch_from_image 默认不再回传全屏截图——需要
+        "看一眼"画布效果时用本方法按需拉取，彻底告别一次 2.5 万 token。
+        """
+        out = self._client.request("GET", "/screenshot/thumb", params={
+            "monitor": monitor, "fmt": fmt, "quality": quality})
+        if out.get("image_b64"):
+            out["image_bytes"] = base64.b64decode(out["image_b64"])
+        return out
+
 
 class DrawAPI(_Namespace):
     """v0.9.1 通用绘制：平滑 + 降采样 + 画板取色 + 真实鼠标轨迹。
@@ -254,6 +267,113 @@ class DrawAPI(_Namespace):
         kw.setdefault("capabilities", self._client.capabilities)
         return self._client.request("POST", "/draw_trajectory",
                                     {**body, **kw}, timeout=120.0)
+
+    def stroke(self, points: Optional[List[List[float]]] = None,
+               subpaths: Optional[List[List[List[float]]]] = None,
+               primitives: Optional[List[Dict[str, Any]]] = None, *,
+               color: Optional[str] = None,
+               brush_width: Optional[int] = None,
+               preserve_corners: Optional[List[Any]] = None,
+               primitive_units: str = "frac", dry_run: bool = False,
+               hwnd: Optional[int] = None, window: Optional[str] = None,
+               duration_ms: int = 800, smooth_iterations: int = 2,
+               closed: bool = False, color_required: bool = False,
+               brush_required: bool = False, settle_seconds: float = 0.1,
+               is_painting: bool = True, monitor: int = 1,
+               include_screenshot: bool = False,
+               **kw: Any) -> Dict[str, Any]:
+        """v0.16 工业级绘制（多段抬笔 / 几何原语 / 笔宽 / 尖角保留 / 预演）。
+
+        三种轨迹输入至少其一（points 与 subpaths 互斥）：
+        - points: 单段物理像素 [[x,y],...]；
+        - subpaths: 多段 [[[x,y],...],...]——段间自动抬笔绝不连线；
+        - primitives: 几何原语 [{"type":"circle","center":[0.5,0.5],
+          "radius":0.2}]（frac 坐标相对画布，Ghost 本地展开成点列）。
+        brush_width 先调画图笔宽（mspaint 走 OCR 定位"大小"下拉）；
+        preserve_corners 为 Chaikin 保留尖角的控制点下标；
+        dry_run=True 只做安全预演（画布越界/工具栏警告），不碰鼠标。
+        默认极简响应（ok/bbox/points_count/elapsed_ms，无截图）；
+        看画面用 ``action.thumb()``。
+        """
+        body: Dict[str, Any] = {
+            "duration_ms": int(duration_ms),
+            "smooth_iterations": int(smooth_iterations),
+            "closed": bool(closed),
+            "color_required": bool(color_required),
+            "brush_required": bool(brush_required),
+            "primitive_units": primitive_units,
+            "dry_run": bool(dry_run),
+            "include_screenshot": bool(include_screenshot),
+            "settle_seconds": settle_seconds,
+            "is_painting": bool(is_painting),
+            "monitor": monitor,
+        }
+        if points is not None:
+            body["points"] = [[float(p[0]), float(p[1])] for p in points]
+        if subpaths is not None:
+            body["subpaths"] = subpaths
+        if primitives is not None:
+            body["primitives"] = primitives
+        if preserve_corners is not None:
+            body["preserve_corners"] = preserve_corners
+        if brush_width is not None:
+            body["brush_width"] = int(brush_width)
+        if color is not None:
+            body["color"] = str(color)
+        if hwnd is not None:
+            body["hwnd"] = int(hwnd)
+        if window is not None:
+            body["window"] = str(window)
+        kw.setdefault("capabilities", self._client.capabilities)
+        return self._client.request("POST", "/draw_trajectory",
+                                    {**body, **kw}, timeout=120.0)
+
+    def sketch_from_image(self, image_path: str, mode: str = "line", *,
+                          hwnd: Optional[int] = None,
+                          window: Optional[str] = None,
+                          color: Optional[str] = None,
+                          color_required: bool = False, k: int = 6,
+                          max_strokes: int = 80, margin: float = 0.06,
+                          dry_run: bool = False, monitor: int = 1,
+                          **kw: Any) -> Dict[str, Any]:
+        """v0.16 终极杀招：图像自动复刻——传本地图片路径，Ghost 亲自画。
+
+        mode="line"（Canny 边缘→轮廓→Douglas-Peucker 极简线稿）或
+        mode="color"（K-Means 聚类量化→逐色域轮廓→自动点色板取色，
+        聚类色就近映射画图调色板）。dry_run=True 只返回复刻计划。
+        目标窗口需有浅色画布（如画图）；响应为极简元数据，无截图。
+        """
+        body: Dict[str, Any] = {
+            "image_path": str(image_path), "mode": str(mode),
+            "color_required": bool(color_required), "k": int(k),
+            "max_strokes": int(max_strokes), "margin": float(margin),
+            "dry_run": bool(dry_run), "monitor": monitor,
+        }
+        if color is not None:
+            body["color"] = str(color)
+        if hwnd is not None:
+            body["hwnd"] = int(hwnd)
+        if window is not None:
+            body["window"] = str(window)
+        kw.setdefault("capabilities", self._client.capabilities)
+        return self._client.request("POST", "/draw/sketch_from_image",
+                                    {**body, **kw}, timeout=600.0)
+
+    def canvas_info(self, hwnd: Optional[int] = None,
+                    window: Optional[str] = None, monitor: int = 1,
+                    **kw: Any) -> Dict[str, Any]:
+        """v0.16 画纸物理边界探测（只读：CV 找浅色画布区域，无输入）。
+
+        返回 canvas.canvas_rect（物理像素）/source（detected|fallback）/
+        toolbar_band——配合 stroke 的 dry_run 可在落笔前确认轨迹全在纸内。
+        """
+        body: Dict[str, Any] = {"monitor": monitor}
+        if hwnd is not None:
+            body["hwnd"] = int(hwnd)
+        if window is not None:
+            body["window"] = str(window)
+        return self._client.request("POST", "/draw/canvas_info",
+                                    {**body, **kw}, timeout=60.0)
 
 
 class VisionAPI(_Namespace):

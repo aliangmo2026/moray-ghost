@@ -1,0 +1,21 @@
+{
+  "name": "Moray-Ghost Desktop Controller",
+  "version": "0.15.0",
+  "description": "本地桌面控制与视觉识别技能：通过 HTTP 调用运行在用户本机的 Moray-Ghost 服务（默认 127.0.0.1:8030），提供精准点击/键盘注入、截图、VLM 视觉分析（元素定位 ground、描述 describe）、宏/技能录制回放、窗口管理与紧急停止。平台侧只需转发 HTTP 请求，不包含任何桌面执行代码。",
+  "author": "moray-ghost",
+  "tags": ["desktop-automation", "computer-use", "vision", "gui-agent", "local"],
+  "base_url": "{{BASE_URL}}",
+  "auth_type": "api_key",
+  "auth_header": "X-Ghost-Token",
+  "auth_env_var": "GHOST_TOKEN",
+  "openapi": "openapi.json",
+  "entrypoint": "main.py",
+  "endpoints": {
+    "execute_action": "/api/ghost/execute_action",
+    "screenshot": "/api/ghost/screenshot",
+    "vl_analyze": "/api/ghost/vl/analyze",
+    "vl_ground": "/api/ghost/vl/ground",
+    "emergency_stop": "/api/ghost/emergency_stop",
+    "health": "/api/ghost/health"
+  }
+}

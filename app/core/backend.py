@@ -30,10 +30,34 @@ from app.platforms.windows import (  # noqa: F402  顺序红线由平台模块�
     write_text,
 )
 
+# v0.17 虚拟输入通道（Windows PostMessage；physical 后端零改动）。
+from app.core import virtual_input  # noqa: E402
+from app.core.virtual_input import (  # noqa: F401
+    VirtualInputError,
+    activate_window,
+    available as virtual_available,
+    capture_signature as virtual_capture,
+    compare_signatures as virtual_compare,
+    points_target_window,
+    read_text as virtual_read_text,
+    synthetic_pointer_available,
+    virtual_click,
+    virtual_drag,
+    virtual_pointer_click,
+    virtual_pointer_drag,
+    virtual_scroll,
+    virtual_type,
+)
+
 __all__ = [
     "BACKEND", "FailSafeException", "InputBackend", "PyAutoGUIBackend",
     "_mouse_event_absolute", "_mouse_event_relative", "pyautogui", "click",
     "foreground_hwnd", "hotkey", "key_names", "move_to", "mouse_down",
     "mouse_up", "point_root", "position", "pressed_modifiers",
     "release_all_modifiers", "release_pointer_buttons", "scroll", "write_text",
+    "virtual_input", "VirtualInputError", "activate_window",
+    "virtual_available", "virtual_capture", "virtual_compare",
+    "virtual_read_text", "virtual_click", "virtual_drag", "virtual_scroll",
+    "virtual_type", "synthetic_pointer_available", "points_target_window",
+    "virtual_pointer_click", "virtual_pointer_drag",
 ]

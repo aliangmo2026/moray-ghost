@@ -1,11 +1,14 @@
-"""通用绘制轨迹资产（v0.9.1）：平滑 + 降采样 + 画板取色。
+"""通用绘制轨迹资产（v0.9.1 → v0.16 工业级）：平滑 + 降采样 + 画板取色。
 
 从 test_v09_draw_whale.py（纯鼠标鲸鱼）沉淀的服务端资产，供
-draw_trajectory 复合动作（HTTP / SDK / MCP）复用。三件套：
+draw_trajectory 复合动作（HTTP / SDK / MCP）复用。四件套：
 
-1. chaikin()          —— 角点控制多边形 → 平滑曲线（切角迭代）。
+1. chaikin()          —— 角点控制多边形 → 平滑曲线（切角迭代；
+                         v0.16 支持 preserve_corners 保留指定尖角不切）。
 2. prepare_trajectory()—— 平滑 + 等距降采样（保端点，≤2000 点，与
                          controller drag 的轨迹上限同源）。
+   prepare_subpaths() —— v0.16 多段轨迹（subpaths）前处理：逐段平滑 +
+                         降采样（段间由 controller drag 物理抬笔，绝不连线）。
 3. find_swatch()      —— CV 在窗口色板区定位"实心纯色圆点"（HSV 域 + 
                          填充率 + 中心像素复核，排除选中态圆环）。
 
@@ -15,7 +18,7 @@ mouse_event 路径提供（SetCursorPos 画不出轨迹，见 docs/底层物理�
 from __future__ import annotations
 
 import colorsys
-from typing import List, Optional, Tuple
+from typing import Any, List, Optional, Sequence, Tuple
 
 import cv2
 import numpy as np
@@ -23,36 +26,104 @@ import numpy as np
 MAX_TRAJECTORY_POINTS = 2000  # 与 controller.MAX_TRAJECTORY_POINTS 同源
 
 
+def _chaikin_open(pts: List[Tuple[float, float]], iterations: int
+                  ) -> List[Tuple[float, float]]:
+    """开放曲线 Chaikin（保留首尾端点）——迭代主体，供各链复用。"""
+    for _ in range(iterations):
+        out: List[Tuple[float, float]] = []
+        n = len(pts)
+        out.append(pts[0])
+        for i in range(n - 1):
+            p0 = pts[i]
+            p1 = pts[i + 1]
+            out.append((0.75 * p0[0] + 0.25 * p1[0],
+                        0.75 * p0[1] + 0.25 * p1[1]))
+            out.append((0.25 * p0[0] + 0.75 * p1[0],
+                        0.25 * p0[1] + 0.75 * p1[1]))
+        out.append(pts[-1])
+        pts = out
+    return pts
+
+
+def normalize_preserve(preserve_corners: Optional[Sequence[Any]],
+                       n: int) -> List[int]:
+    """preserve_corners 归一化：只留 0..n-1 的 int，去重升序。
+
+    索引语义 = 传入控制点列表的原始下标（负数/越界一律丢弃，绝不猜）。
+    """
+    if not preserve_corners:
+        return []
+    out = set()
+    for idx in preserve_corners:
+        if isinstance(idx, bool) or not isinstance(idx, int):
+            continue
+        if 0 <= idx < n:
+            out.add(idx)
+    return sorted(out)
+
+
 def chaikin(points: List[Tuple[float, float]], iterations: int = 2,
-            closed: bool = False) -> List[Tuple[float, float]]:
+            closed: bool = False,
+            preserve_corners: Optional[Sequence[Any]] = None
+            ) -> List[Tuple[float, float]]:
     """Chaikin 切角平滑：控制多边形 → 平滑曲线，迭代次数越多越圆润。
 
     closed=False 时保留原首尾端点（开放曲线）；closed=True 时首尾相接
     （注意：画图软件会把闭合笔迹并成闭合形状，默认开放，见
     docs/底层物理控制.md 第 3 节）。
+
+    preserve_corners（v0.16）：控制点下标数组——这些尖角被原样保留
+    （切链平滑：角点两侧各成独立链独立平滑，角点本身逐迭代原样输出）。
+    典型用途：眼睛/星形尖角等绝不能被抹圆的几何特征。
     """
     pts = [(float(x), float(y)) for x, y in points]
     if len(pts) < 2:
         return pts
     iterations = max(0, int(iterations))
-    for _ in range(iterations):
-        out: List[Tuple[float, float]] = []
-        n = len(pts)
+    pres = normalize_preserve(preserve_corners, len(pts))
+    if not pres:
         if not closed:
-            out.append(pts[0])
-        for i in range(n if closed else n - 1):
-            p0 = pts[i]
-            p1 = pts[(i + 1) % n]
-            out.append((0.75 * p0[0] + 0.25 * p1[0],
-                        0.75 * p0[1] + 0.25 * p1[1]))
-            out.append((0.25 * p0[0] + 0.75 * p1[0],
-                        0.25 * p0[1] + 0.75 * p1[1]))
-        if not closed:
-            out.append(pts[-1])
-        pts = out
-    if closed and len(pts) > 1:
-        pts.append(pts[0])
-    return pts
+            return _chaikin_open(pts, iterations)
+        for _ in range(iterations):
+            out = []
+            n = len(pts)
+            for i in range(n):
+                p0 = pts[i]
+                p1 = pts[(i + 1) % n]
+                out.append((0.75 * p0[0] + 0.25 * p1[0],
+                            0.75 * p0[1] + 0.25 * p1[1]))
+                out.append((0.25 * p0[0] + 0.75 * p1[0],
+                            0.25 * p0[1] + 0.75 * p1[1]))
+            pts = out
+        if len(pts) > 1:
+            pts.append(pts[0])
+        return pts
+
+    # ---- 保留尖角：在角点处切链，每链独立平滑（端点=角点，天然不丢） ----
+    if closed:
+        ring = pts + [pts[0]]  # 环展开成开链（末点=首点）
+        anchors = pres if pres else [0]
+        if len(anchors) == 1:
+            a = anchors[0]
+            chains = [ring[a:] + ring[1:a + 1]]  # 整环从 a 回到 a
+        else:
+            chains = []
+            for i, a in enumerate(anchors):
+                b = anchors[(i + 1) % len(anchors)]
+                if i == len(anchors) - 1:
+                    chains.append(ring[a:] + ring[:b + 1])
+                else:
+                    chains.append(ring[a:b + 1])
+    else:
+        bounds = sorted(set([0] + pres + [len(pts) - 1]))
+        chains = [pts[bounds[i]:bounds[i + 1] + 1]
+                  for i in range(len(bounds) - 1)
+                  if bounds[i + 1] > bounds[i]]
+    out: List[Tuple[float, float]] = []
+    for chain in chains:
+        sm = _chaikin_open(chain, iterations)
+        out.extend(sm if not out else sm[1:])  # 拼接去重（链端点=角点）
+    return out
 
 
 def downsample(points: List[Tuple[float, float]],
@@ -69,18 +140,61 @@ def downsample(points: List[Tuple[float, float]],
 
 def prepare_trajectory(points: List[List[float]],
                        smooth_iterations: int = 2, closed: bool = False,
-                       max_points: int = MAX_TRAJECTORY_POINTS
+                       max_points: int = MAX_TRAJECTORY_POINTS,
+                       preserve_corners: Optional[Sequence[Any]] = None
                        ) -> List[List[int]]:
     """draw_trajectory 的轨迹前处理：平滑 → 闭合补端 → 降采样 → 整数化。"""
+    pts = [(float(x), float(y)) for x, y in points]
     if closed:
-        pts = [(float(x), float(y)) for x, y in points]
         if len(pts) >= 2 and pts[0] != pts[-1]:
             pts = pts + [pts[0]]
-    else:
-        pts = [(float(x), float(y)) for x, y in points]
-    smoothed = chaikin(pts, smooth_iterations, closed=False)
+    smoothed = chaikin(pts, smooth_iterations, closed=False,
+                       preserve_corners=preserve_corners)
     final = downsample(smoothed, max_points)
     return [[int(round(x)), int(round(y))] for x, y in final]
+
+
+def _per_segment_preserve(preserve_corners: Optional[Sequence[Any]],
+                          count: int) -> List[Optional[Sequence[Any]]]:
+    """preserve_corners 的多段语义：扁平数组 → 每段同款；嵌套数组 → 逐段。
+
+    嵌套长度不足的段没有保留角（None）；嵌套超长 → ValueError（绝不静默截断）。
+    """
+    if not preserve_corners:
+        return [None] * count
+    if all(isinstance(v, int) and not isinstance(v, bool)
+           for v in preserve_corners):
+        return [preserve_corners] * count
+    if all(isinstance(v, (list, tuple)) for v in preserve_corners):
+        if len(preserve_corners) > count:
+            raise ValueError(
+                "preserve_corners nested list is longer than subpaths ("
+                + str(len(preserve_corners)) + " > " + str(count) + ")")
+        return list(preserve_corners) + [None] * (count - len(preserve_corners))
+    raise ValueError("preserve_corners must be [int, ...] (每个下标相对各段自身"
+                     "控制点) 或 [[int,...], ...] (逐段)")
+
+
+def prepare_subpaths(subpaths: List[List[List[float]]],
+                     smooth_iterations: int = 2, closed: bool = False,
+                     preserve_corners: Optional[Sequence[Any]] = None,
+                     max_points: int = MAX_TRAJECTORY_POINTS
+                     ) -> List[List[List[int]]]:
+    """多段轨迹前处理（v0.16）：逐段 平滑→闭合补端→降采样→整数化。
+
+    段间衔接由 controller drag 物理抬笔完成（mouse_up → 移动 → mouse_down），
+    本模块只负责把每段各自准备好；任何一段平滑后塌缩到 <2 点即报错。
+    """
+    per_pres = _per_segment_preserve(preserve_corners, len(subpaths))
+    out: List[List[List[int]]] = []
+    for seg, pres in zip(subpaths, per_pres):
+        prepared = prepare_trajectory(seg, smooth_iterations, closed,
+                                      max_points, pres)
+        if len(prepared) < 2:
+            raise ValueError(
+                "a subpath collapsed to <2 points after smoothing")
+        out.append(prepared)
+    return out
 
 
 # ---- 画板取色：HSV 域 + 中心像素复核 ---------------------------------------
