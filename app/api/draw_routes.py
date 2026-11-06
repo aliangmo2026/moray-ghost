@@ -513,6 +513,10 @@ class SketchFromImageBody(BaseModel):
                    description="color 模式 K-Means 聚类数")
     max_strokes: int = Field(default=80, ge=1, le=300,
                              description="line 模式最多画的轮廓条数")
+    line_epsilon_scale: float = Field(
+        default=0.006, ge=0.0005, le=0.02,
+        description="line 模式 Douglas-Peucker 周长比例；越小曲线越细"
+                    "（默认 0.006，展示级可用 0.0025）")
     max_strokes_per_color: int = Field(default=24, ge=1, le=100)
     margin: float = Field(default=0.06, ge=0.0, le=0.3,
                           description="画布内边距（占画布宽高比例）")
@@ -591,7 +595,8 @@ def sketch_from_image(body: SketchFromImageBody,
     try:
         if mode == "line":
             subpaths, plan_meta = sketch_mod.line_subpaths(
-                img_bgr, max_strokes=body.max_strokes)
+                img_bgr, max_strokes=body.max_strokes,
+                eps_scale=body.line_epsilon_scale)
             groups = [{"color": (body.color or "").strip().lower() or None,
                        "subpaths": subpaths}]
         else:

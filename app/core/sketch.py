@@ -101,9 +101,15 @@ def _contour_to_subpath(contour: "np.ndarray", closed: bool = True
 
 
 def line_subpaths(img_bgr: "np.ndarray",
-                  max_strokes: int = 80
+                  max_strokes: int = 80,
+                  eps_scale: float = 0.006
                   ) -> Tuple[List[List[List[int]]], Dict[str, Any]]:
-    """线稿模式：Canny → 轮廓 → DP 极简 → 闭合轨迹（图像像素坐标）。"""
+    """线稿模式：Canny → 轮廓 → DP 极简 → 闭合轨迹（图像像素坐标）。
+
+    ``eps_scale`` 是 Douglas-Peucker 的周长比例（默认 0.006）。展示级复刻
+    可传更小值（如 0.0025）保留更多曲线细节；默认值保持不变，旧调用零回归。
+    """
+    eps_scale = min(max(float(eps_scale), 0.0005), 0.02)
     gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
     med = float(np.median(gray))
     lo = int(max(0, CANNY_LO_FRAC * med))
@@ -129,7 +135,8 @@ def line_subpaths(img_bgr: "np.ndarray",
     subpaths: List[List[List[int]]] = []
     dropped = 0
     for score, c in scored[:max_strokes]:
-        sp = _contour_to_subpath(_approx(c, max(score, 1.0)))
+        sp = _contour_to_subpath(_approx(c, max(score, 1.0),
+                                        eps_scale=eps_scale))
         if len(sp) >= 2:
             subpaths.append(sp)
         else:
@@ -137,7 +144,7 @@ def line_subpaths(img_bgr: "np.ndarray",
     dropped += max(0, len(scored) - max_strokes)
     meta = {"canny_lo": lo, "canny_hi": hi,
             "contours": len(contours), "kept": len(subpaths),
-            "dropped": dropped}
+            "dropped": dropped, "eps_scale": eps_scale}
     return subpaths, meta
 
 

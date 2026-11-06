@@ -167,6 +167,9 @@ v0.17 套件 D 段：线程 A 记事本 virtual 打字 ×4 + 线程 B 经典画�
 - `app/core/action_locks.py`
 - `app/core/virtual_input.py`
 - `scripts/test_v17_concurrent_virtual.py`
+- `scripts/test_showcase_fat_fish.py`
+- `docs/assets/fat_fish_drawing.gif`
+- `docs/assets/fat_fish_final.png`
 - `docs/RELEASE_v0.17.0.md`
 
 修改：
@@ -174,6 +177,8 @@ v0.17 套件 D 段：线程 A 记事本 virtual 打字 ×4 + 线程 B 经典画�
 - `app/core/task_queue.py`（工作池 + 多运行任务冻结）
 - `app/core/config.py`（v0.17 开关 + VERSION 0.17.0）
 - `app/api/routes.py`（ExecuteRequest channel/virtual_fallback/verify + health 观测）
+- `app/api/draw_routes.py`（sketch line_epsilon_scale 展示级细节参数）
+- `app/core/sketch.py`（line_subpaths eps_scale，默认 0.006 零回归）
 - `app/api/dashboard_routes.py`（running_tasks / running_count）
 - `app/core/backend.py`（virtual_input 再导出）
 - `app/core/icon_grid.py`（去掉盘符绝对路径，E-1 开源标准）
@@ -181,3 +186,24 @@ v0.17 套件 D 段：线程 A 记事本 virtual 打字 ×4 + 线程 B 经典画�
 - `README.md`（v0.17 changelog / API / health 示例）
 - `scripts/test_v16_industrial_draw.py` / `scripts/test_v12_gui_rag.py` /
   `scripts/test_v071_security.py`（回归夹具与过期断言修正）
+
+---
+
+## 8. README 首图：Ghost 画 DeepSeek 鲸鱼娘
+
+开源首图来自真实的物理鼠标绘制，不是渲染合成：
+
+- 输入：`data/fat_fish.png` → 裁左侧 1/3 正面视图、去背景细小噪点、保边去纹理
+  → `data/fat_fish_face.png`（448×632）。
+- 执行：`scripts/test_showcase_fat_fish.py` 自建 mspaint（PID/hwnd 差集 +
+  TOPMOST/前台防遮挡），`POST /draw/sketch_from_image` 线稿模式真实落笔。
+- 结果：**120 strokes / 1659 points / 8.5s**；画布局部录屏合成
+  `docs/assets/fat_fish_drawing.gif`（640×692，46 帧 / 5.96s，**2.81 MiB**，加速播放）；
+  最终帧 `docs/assets/fat_fish_final.png`。
+- 细节参数：线稿 DP `line_epsilon_scale=0.0025`（默认 0.006，展示级更细），
+  `max_strokes=120`、`max_total_points=8000`、`margin=0.05`。
+- 清理：只杀本次新增 mspaint PID/子进程；恢复原光标；端口 8030 释放。
+
+README 顶部（徽章下方）放置 GIF，英文说明：
+
+> Watch Ghost physically draw a DeepSeek Whale Girl using native mouse movements!
