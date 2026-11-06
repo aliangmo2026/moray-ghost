@@ -168,8 +168,11 @@ v0.17 套件 D 段：线程 A 记事本 virtual 打字 ×4 + 线程 B 经典画�
 - `app/core/virtual_input.py`
 - `scripts/test_v17_concurrent_virtual.py`
 - `scripts/test_showcase_fat_fish.py`
-- `docs/assets/fat_fish_drawing.gif`
-- `docs/assets/fat_fish_final.png`
+- `scripts/test_showcase_fat_fish_color.py`
+- `docs/assets/fat_fish_drawing.gif`（线稿版）
+- `docs/assets/fat_fish_drawing_color.gif`（彩色版）
+- `docs/assets/fat_fish_final.png`（彩色最终帧）
+- `docs/assets/fat_fish_final_line.png`（线稿最终帧）
 - `docs/RELEASE_v0.17.0.md`
 
 修改：
@@ -189,21 +192,32 @@ v0.17 套件 D 段：线程 A 记事本 virtual 打字 ×4 + 线程 B 经典画�
 
 ---
 
-## 8. README 首图：Ghost 画 DeepSeek 鲸鱼娘
+## 8. README 首图：Ghost 画彩色 DeepSeek 鲸鱼娘
 
 开源首图来自真实的物理鼠标绘制，不是渲染合成：
 
 - 输入：`data/fat_fish.png` → 裁左侧 1/3 正面视图、去背景细小噪点、保边去纹理
   → `data/fat_fish_face.png`（448×632）。
-- 执行：`scripts/test_showcase_fat_fish.py` 自建 mspaint（PID/hwnd 差集 +
-  TOPMOST/前台防遮挡），`POST /draw/sketch_from_image` 线稿模式真实落笔。
-- 结果：**120 strokes / 1659 points / 8.5s**；画布局部录屏合成
-  `docs/assets/fat_fish_drawing.gif`（640×692，46 帧 / 5.96s，**2.81 MiB**，加速播放）；
-  最终帧 `docs/assets/fat_fish_final.png`。
+- 执行：`scripts/test_showcase_fat_fish_color.py` 自建 mspaint（PID/hwnd 差集 +
+  TOPMOST/前台防遮挡），先跑 `sketch_from_image` 线稿（120 笔 / 1659 点），
+  再按 K-Means 分区做分层填充。
+- 分区与配色：画布线稿闭合区 → 连通域 + 距离变换取内部点 → 反投影回原图，
+  K-Means（k=10）主导色映射到 Paint 20 色调色板：浅蓝 `#99D9EA`、中蓝
+  `#7092BE`、深蓝 `#3F48CC`、奶油肤色 `#EFE4B0`、亮蓝 `#00A2E8`、淡紫
+  `#C8BFE7`；白色褶边/围裙保留画布白。
+- 安全填充：油漆桶逐区点击；每次填充后局部截图校验 —— 漏色（区外变化
+  >5%）、覆盖不足（<50%）、颜色不对 → **Ctrl+Z 自动撤销**（失败再点工具栏
+  撤销）；成功 34 区。桶填失败的 14 区在最后用画笔做 **2px 间距密集扫描线**
+  填充（涂色书兜底，13 区成功；1 个 361px 小区被路由拒绝留白），随后再跑一次
+  线稿压盖，保证黑色描边干净。
+- 结果：画布局部录屏合成 `docs/assets/fat_fish_drawing_color.gif`
+  （**400×559，73 帧 / 8.3s，2.68 MiB**，<3MB，加速播放）；最终帧
+  `docs/assets/fat_fish_final.png`（604×844）；纯线稿版保留为
+  `docs/assets/fat_fish_drawing.gif` / `fat_fish_final_line.png`。
 - 细节参数：线稿 DP `line_epsilon_scale=0.0025`（默认 0.006，展示级更细），
   `max_strokes=120`、`max_total_points=8000`、`margin=0.05`。
 - 清理：只杀本次新增 mspaint PID/子进程；恢复原光标；端口 8030 释放。
 
-README 顶部（徽章下方）放置 GIF，英文说明：
+README 顶部（徽章下方）放置彩色 GIF，英文说明：
 
 > Watch Ghost physically draw a DeepSeek Whale Girl using native mouse movements!

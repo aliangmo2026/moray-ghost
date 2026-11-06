@@ -7,12 +7,12 @@
 ![audit](https://img.shields.io/badge/audit-JSONL%20%2B%20token%20fingerprint-lightgrey)
 
 <p align="center">
-  <img src="docs/assets/fat_fish_drawing.gif" alt="Watch Ghost physically draw a DeepSeek Whale Girl using native mouse movements!" width="640">
+  <img src="docs/assets/fat_fish_drawing_color.gif" alt="Watch Ghost physically draw a DeepSeek Whale Girl using native mouse movements!" width="480">
 </p>
 
 <p align="center"><b>Watch Ghost physically draw a DeepSeek Whale Girl using native mouse movements!</b></p>
 
-<p align="center"><sub><a href="docs/assets/fat_fish_final.png">final frame</a> · self-built mspaint · 120 strokes / 1659 points in 8.5s · GIF accelerated</sub></p>
+<p align="center"><sub><a href="docs/assets/fat_fish_final.png">final frame</a> · self-built mspaint · 120 outline strokes · 48 K-Means color regions (bucket + dense-brush fallback) · GIF accelerated</sub></p>
 
 Windows 桌面自动化本地服务（v0.17.0）：**mss 极速截图 + 授权式 pyautogui 动作 + 宏录制/安全重放 + 任务生命周期 + 环境感知 + 视觉反哺 Heal + 多 Agent 任务队列 + Web 监控面板 + 官方 Python SDK + MCP Server（Stdio，任意 AI Agent 即插即用，v0.14 起带 Resources 免工具看屏）+ 本地 VL 感知（rapidocr / llama-cpp CUDA GGUF，2B/7B 档位 + CV+VL 混合图标定位）+ GUI RAG（OCR+CV 编号元素表 → VLM 只回 target_id）+ Ghost Guard（点击前动态高危词门禁 → PENDING_APPROVAL / 人工审批令牌）+ v0.17 并发调度与虚拟输入通道（按 hwnd 细粒度窗口锁 / 4 工作池并发任务 / channel=virtual 的 PostMessage 后台输入 + 128px 可观测性校验 + physical 自动降级审计 / physical 默认路径零改动）+ v0.16 工业级物理操控引擎（多段抬笔 subpaths / 几何原语 primitives / 笔宽 brush_width / 尖角保留 preserve_corners / 图像自动复刻 sketch_from_image / 画布感知 canvas_info / dry_run 安全预演 / 极简响应 + 256px 缩略图）+ v0.7 绝对防御 + v0.7.1 企业级安全 + v0.7.2 极限安全 + v0.14 多屏混合 DPI 坐标对齐与长时挂机保障 + v0.15 快慢双系统（System1 弹窗反射脑）/ 跨平台驱动抽象 app/platforms/ / 自我进化技能库（pynput 行为克隆 + VLM 语义标注）**。
 
@@ -225,10 +225,13 @@ Windows 桌面自动化本地服务（v0.17.0）：**mss 极速截图 + 授权�
 > | 5 任务并发（breaker r3） | 4 个同时 running、第 5 个 queued；9.0s 全部 done；无 INTERNAL_ERROR |
 > | v0.16 FIFO 兼容 | `GHOST_MAX_CONCURRENT_TASKS=1` → v0.5 平台套件 33/33 |
 >
-> ⑥ **开源首图**——README 顶部 GIF 由 `scripts/test_showcase_fat_fish.py` 生成：自建
-> mspaint + `sketch_from_image` 线稿模式，**120 笔 / 1659 点 / 8.5s** 真实鼠标绘制；
-> 画布局部录屏合成 640×692 / **2.81 MiB** 加速 GIF，最终帧
-> [fat_fish_final.png](docs/assets/fat_fish_final.png)。
+> ⑥ **开源彩色首图**——README 顶部 GIF 由 `scripts/test_showcase_fat_fish_color.py` 生成：
+> 自建 mspaint + `sketch_from_image` 线稿（120 笔 / 1659 点）+ K-Means 分区（48 区：
+> 浅蓝 #99D9EA / 中蓝 #7092BE / 深蓝 #3F48CC / 奶油肤色 #EFE4B0 / 亮蓝 #00A2E8 / 淡紫 #C8BFE7）
+> + 油漆桶分层填充（34 区成功）+ 泄漏自动 Ctrl+Z / 密集笔刷兜底（14 区，13 成功；1 个 361px 小区留白）+ 终稿线稿压盖；
+> 画布局部录屏合成 **400×559 / 73 帧 / 8.3s / 2.68 MiB** 加速 GIF（<3MB），最终帧
+> [fat_fish_final.png](docs/assets/fat_fish_final.png)（604×844）；纯线稿版保留为
+> [fat_fish_final_line.png](docs/assets/fat_fish_final_line.png)。
 >
 > **v0.16.0 工业级物理操控引擎（把 Ghost 从"只能点按钮的脚本"升级为"数字机械臂"，复杂 CV 全本地、零大模型负担）**：
 > ① **切断 Token 浪费**——`draw_trajectory` / `sketch_from_image` 默认**绝不回传全屏截图**（旧版一次 ~90KB ≈ 2.5 万 token 的灾难根因），响应只含
